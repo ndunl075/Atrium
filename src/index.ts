@@ -15,6 +15,13 @@ export {
   type JoinResult,
 } from "./room.js";
 export {
+  foldTasks,
+  blockingDependencies,
+  isClaimable,
+  needsEscalation,
+  type FoldOptions,
+} from "./tasks.js";
+export {
   roomPaths,
   resolveArtifact,
   toArtifactPath,
