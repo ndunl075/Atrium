@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Rooms created while poking at the thing by hand
+/scratch/
+*.db
+*.db-wal
+*.db-shm
+
+.DS_Store
