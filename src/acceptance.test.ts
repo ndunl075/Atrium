@@ -431,3 +431,53 @@ function readTaskShapeStub(): Task {
     seq: 0,
   };
 }
+
+describe("two reviewers reaching the same task at once", () => {
+  it("counts only one of two competing rejections", async () => {
+    const room = tempRoom();
+    const worker = room.join({ name: "w1", role: "worker" }).member;
+    const reviewer1 = room.join({ name: "r1", role: "reviewer" }).member;
+    const reviewer2 = room.join({ name: "r2", role: "reviewer" }).member;
+
+    const taskId = createTask(room, { kind: "reviewer" });
+    claim(room, taskId, worker.id);
+    await submitTask(room, worker.id, taskId, { summary: "have a look" });
+
+    // A second connection onto the same room, the way a second reviewer in its
+    // own process would open it.
+    const other = Room.open(room.dir);
+    try {
+      const outcomes = [
+        { room, actorId: reviewer1.id },
+        { room: other, actorId: reviewer2.id },
+      ].map(({ room: handle, actorId }) => {
+        try {
+          reviewTask(handle, actorId, taskId, {
+            accept: false,
+            reason: "not good enough",
+          });
+          return "recorded";
+        } catch {
+          return "refused";
+        }
+      });
+
+      expect(outcomes.filter((o) => o === "recorded")).toHaveLength(1);
+      expect(outcomes.filter((o) => o === "refused")).toHaveLength(1);
+
+      // The attempt counter moved by one, not two, so the task did not burn an
+      // extra go towards being frozen.
+      //
+      // Note what this does and does not show. node:sqlite is synchronous, so
+      // these two calls cannot genuinely overlap in one process: the second
+      // reviewer reads a task that is already rejected and is turned away on
+      // state alone. What is pinned down here is the behaviour. The reason it
+      // also holds for two real processes, where the reads *can* interleave, is
+      // that reviewTask does its read and its append inside one transaction.
+      expect(readTask(room, taskId).attempts).toBe(1);
+      expect(room.log.read({ types: ["task.rejected"] })).toHaveLength(1);
+    } finally {
+      other.close();
+    }
+  });
+});

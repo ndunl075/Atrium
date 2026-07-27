@@ -79,82 +79,92 @@ export async function submitTask(
   room.assertUsable();
 
   const task = currentTask(room, taskId);
-  if (task.state !== "claimed") {
-    throw new InvalidError(
-      `${taskId} is ${task.state}, not claimed, so there is nothing to hand in. Claim it first.`,
-      { taskId, state: task.state },
-    );
-  }
-  if (task.claimedBy !== actorId) {
-    throw new PermissionError(
-      `${actorId} does not hold the claim on ${taskId} (${task.claimedBy} does), so it cannot submit this work.`,
-      { taskId, claimedBy: task.claimedBy, actorId },
-    );
-  }
-
-  const submitted: PendingEvent<"task.submitted"> = {
-    actor: actorId,
-    type: "task.submitted",
-    data: {
-      taskId,
-      memberId: actorId,
-      summary: input.summary,
-      artifacts: input.artifacts ?? [],
-      basedOnSeq: input.basedOnSeq ?? room.log.head(),
-    },
-  };
+  assertSubmittable(task, actorId);
 
   const { acceptance } = task;
+  if (acceptance.kind === "none" && !room.config.allowUncheckedAcceptance) {
+    throw new InvalidError(
+      `${taskId} uses "none" acceptance, which this room does not allow. ` +
+        `Turn on allowUncheckedAcceptance if auto-accept is genuinely intended, ` +
+        `or give the task a command, reviewer, or human acceptance instead.`,
+      { taskId },
+    );
+  }
 
-  if (acceptance.kind === "none") {
-    if (!room.config.allowUncheckedAcceptance) {
-      throw new InvalidError(
-        `${taskId} uses "none" acceptance, which this room does not allow. ` +
-          `Turn on allowUncheckedAcceptance if auto-accept is genuinely intended, ` +
-          `or give the task a command, reviewer, or human acceptance instead.`,
-        { taskId },
-      );
-    }
-    room.log.appendMany([
-      submitted,
+  // A command can take a minute, and the write lock cannot be held across it
+  // without stopping the whole room, so it runs before the lock is taken. The
+  // state it was checked against is re-checked below.
+  const result =
+    acceptance.kind === "command"
+      ? await runAcceptanceCommand(room, task)
+      : undefined;
+
+  return room.log.transaction(() => {
+    // The claim could have lapsed or been released while the command ran, so
+    // the check that mattered is this one, taken with the write lock held.
+    const fresh = currentTask(room, taskId);
+    assertSubmittable(fresh, actorId);
+
+    const entries: PendingEvent[] = [
       {
+        actor: actorId,
+        type: "task.submitted",
+        data: {
+          taskId,
+          memberId: actorId,
+          summary: input.summary,
+          artifacts: input.artifacts ?? [],
+          basedOnSeq: input.basedOnSeq ?? room.log.head(),
+        },
+      } satisfies PendingEvent<"task.submitted">,
+    ];
+
+    if (acceptance.kind === "none") {
+      entries.push({
         actor: actorId,
         type: "task.accepted",
         data: { taskId, by: actorId, via: "none" },
-      },
-    ]);
-    return currentTask(room, taskId);
-  }
-
-  if (acceptance.kind === "command") {
-    // The whole point of a command task: the machine decides, not the agent.
-    const result = await runAcceptanceCommand(room, task);
-
-    const entries: PendingEvent[] = [submitted];
-    if (result.ok) {
-      entries.push({
-        actor: actorId,
-        type: "task.accepted",
-        data: { taskId, by: actorId, via: "command", detail: result.output },
       });
-    } else {
-      entries.push({
-        actor: actorId,
-        type: "task.rejected",
-        data: { taskId, by: actorId, via: "command", reason: result.output },
-      });
-      escalateIfNeeded(room, task, entries);
+    } else if (result) {
+      // The whole point of a command task: the machine decides, not the agent.
+      if (result.ok) {
+        entries.push({
+          actor: actorId,
+          type: "task.accepted",
+          data: { taskId, by: actorId, via: "command", detail: result.output },
+        });
+      } else {
+        entries.push({
+          actor: actorId,
+          type: "task.rejected",
+          data: { taskId, by: actorId, via: "command", reason: result.output },
+        });
+        escalateIfNeeded(room, fresh, entries);
+      }
     }
+    // Anything else is "reviewer" or "human": the task now waits for reviewTask.
 
     // Submission and verdict land together: a crash cannot leave a submission
     // on record with no verdict when the command already ran.
     room.log.appendMany(entries);
     return currentTask(room, taskId);
-  }
+  });
+}
 
-  // "reviewer" or "human": the task now waits for reviewTask.
-  room.log.appendMany([submitted]);
-  return currentTask(room, taskId);
+/** The task must be claimed, and claimed by whoever is handing it in. */
+function assertSubmittable(task: Task, actorId: MemberId): void {
+  if (task.state !== "claimed") {
+    throw new InvalidError(
+      `${task.id} is ${task.state}, not claimed, so there is nothing to hand in. Claim it first.`,
+      { taskId: task.id, state: task.state },
+    );
+  }
+  if (task.claimedBy !== actorId) {
+    throw new PermissionError(
+      `${actorId} does not hold the claim on ${task.id} (${task.claimedBy} does), so it cannot submit this work.`,
+      { taskId: task.id, claimedBy: task.claimedBy, actorId },
+    );
+  }
 }
 
 /**
@@ -170,63 +180,74 @@ export function reviewTask(
 ): Task {
   room.assertUsable();
 
-  const task = currentTask(room, taskId);
-  if (task.state !== "submitted") {
-    throw new InvalidError(
-      `${taskId} is ${task.state}, not submitted, so there is no verdict to give yet.`,
-      { taskId, state: task.state },
-    );
-  }
-
-  if (task.submittedBy === actorId) {
-    throw new PermissionError(
-      `${actorId} submitted this work and cannot also be the one who checks it. ` +
-        `Work has to be checked by somebody else.`,
-      { taskId, actorId },
-    );
-  }
-
-  const { acceptance } = task;
-  switch (acceptance.kind) {
-    case "command":
-      throw new PermissionError(
-        `${taskId} is decided by its command, not by a manual verdict. ` +
-          `Fix the work and hand it in again so the command can run.`,
-        { taskId },
+  // Reading the task, checking it, and recording the verdict happen with the
+  // write lock held. Two reviewers can reach the same submitted task at the
+  // same moment, and without this both rejections would count: the attempt
+  // counter would jump by two and freeze the task a go early.
+  return room.log.transaction(() => {
+    const task = currentTask(room, taskId);
+    if (task.state !== "submitted") {
+      throw new InvalidError(
+        `${taskId} is ${task.state}, not submitted, so there is no verdict to give yet.`,
+        { taskId, state: task.state },
       );
-    case "reviewer":
-      room.requireRole(actorId, ["reviewer", "human"]);
-      break;
-    case "human":
-      room.requireRole(actorId, ["human"]);
-      break;
-    case "none":
-      // submitTask resolves "none" tasks the moment they are submitted, so a
-      // task can never actually be sitting in "submitted" state with this kind.
-      break;
-  }
+    }
 
-  if (verdict.accept) {
-    room.log.append(actorId, "task.accepted", {
-      taskId,
-      by: actorId,
-      via: acceptance.kind,
-      detail: verdict.note,
-    });
+    if (task.submittedBy === actorId) {
+      throw new PermissionError(
+        `${actorId} submitted this work and cannot also be the one who checks it. ` +
+          `Work has to be checked by somebody else.`,
+        { taskId, actorId },
+      );
+    }
+
+    const { acceptance } = task;
+    switch (acceptance.kind) {
+      case "command":
+        throw new PermissionError(
+          `${taskId} is decided by its command, not by a manual verdict. ` +
+            `Fix the work and hand it in again so the command can run.`,
+          { taskId },
+        );
+      case "reviewer":
+        room.requireRole(actorId, ["reviewer", "human"]);
+        break;
+      case "human":
+        room.requireRole(actorId, ["human"]);
+        break;
+      case "none":
+        // submitTask resolves "none" tasks the moment they are submitted, so a
+        // task can never actually be sitting in "submitted" state with this kind.
+        break;
+    }
+
+    if (verdict.accept) {
+      room.log.append(actorId, "task.accepted", {
+        taskId,
+        by: actorId,
+        via: acceptance.kind,
+        detail: verdict.note,
+      });
+      return currentTask(room, taskId);
+    }
+
+    const entries: PendingEvent[] = [
+      {
+        actor: actorId,
+        type: "task.rejected",
+        data: {
+          taskId,
+          by: actorId,
+          via: acceptance.kind,
+          reason: verdict.reason,
+        },
+      },
+    ];
+    escalateIfNeeded(room, task, entries);
+
+    room.log.appendMany(entries);
     return currentTask(room, taskId);
-  }
-
-  const entries: PendingEvent[] = [
-    {
-      actor: actorId,
-      type: "task.rejected",
-      data: { taskId, by: actorId, via: acceptance.kind, reason: verdict.reason },
-    },
-  ];
-  escalateIfNeeded(room, task, entries);
-
-  room.log.appendMany(entries);
-  return currentTask(room, taskId);
+  });
 }
 
 /**
