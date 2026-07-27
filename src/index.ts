@@ -22,6 +22,61 @@ export {
   type FoldOptions,
 } from "./tasks.js";
 export {
+  createTask,
+  listTasks,
+  getTask,
+  claimTask,
+  releaseTask,
+  sweepExpiredClaims,
+  type CreateTaskInput,
+  type TaskFilter,
+} from "./board.js";
+export {
+  submitTask,
+  reviewTask,
+  runAcceptanceCommand,
+  pendingReview,
+  type SubmitInput,
+  type Verdict,
+  type AcceptanceCommandResult,
+} from "./acceptance.js";
+export {
+  foldLeases,
+  currentLease,
+  listLeases,
+  acquireLease,
+  renewLease,
+  releaseLease,
+} from "./leases.js";
+export {
+  readArtifact,
+  readArtifactBytes,
+  writeArtifact,
+  deleteArtifact,
+  listArtifacts,
+  artifactInfo,
+  type ArtifactRead,
+  type ArtifactReadBytes,
+  type WriteOptions,
+} from "./artifacts.js";
+export {
+  getContext,
+  pinArtifact,
+  unpinArtifact,
+  listPinned,
+  describeHistory,
+  type RoomContext,
+  type PinnedArtifact,
+  type HistoryLine,
+} from "./context.js";
+export {
+  searchArtifacts,
+  indexRoom,
+  type SearchHit,
+  type SearchOptions,
+  type IndexStats,
+} from "./search.js";
+export {
   roomPaths,
   resolveArtifact,
   toArtifactPath,
