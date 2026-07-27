@@ -10,6 +10,7 @@ import {
   deleteArtifact,
   listArtifacts,
   readArtifact,
+  readArtifactBytes,
   writeArtifact,
 } from "./artifacts.js";
 import { InvalidError, LeaseError, StaleError } from "./errors.js";
@@ -255,5 +256,36 @@ describe("artifactInfo / listArtifacts", () => {
     deleteArtifact(room, a.id, "one.md");
 
     expect(listArtifacts(room).map((i) => i.path)).toEqual(["two.md"]);
+  });
+});
+
+describe("binary artifacts", () => {
+  it("gives back the exact bytes that were written", () => {
+    const room = tempRoom();
+    const worker = room.join({ name: "w1", role: "worker" }).member;
+    acquireLease(room, worker.id, "logo.png");
+
+    // Bytes that are not valid UTF-8, which is what a real image looks like.
+    const original = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe, 0x00, 0x80,
+    ]);
+    writeArtifact(room, worker.id, "logo.png", original);
+
+    const read = readArtifactBytes(room, "logo.png");
+    expect(read.exists).toBe(true);
+    expect(Buffer.compare(read.content!, original)).toBe(0);
+
+    // Reading the same file as text mangles it, which is why the byte-wise
+    // read exists at all.
+    const asText = readArtifact(room, "logo.png");
+    expect(Buffer.from(asText.content!, "utf8").length).not.toBe(original.length);
+  });
+
+  it("reports a missing binary file rather than throwing", () => {
+    const room = tempRoom();
+    const read = readArtifactBytes(room, "nothing-here.bin");
+    expect(read.exists).toBe(false);
+    expect(read.content).toBeUndefined();
+    expect(read.seq).toBe(0);
   });
 });

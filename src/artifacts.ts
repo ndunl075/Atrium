@@ -46,6 +46,11 @@ export interface ArtifactRead {
   seq: number;
 }
 
+export interface ArtifactReadBytes extends Omit<ArtifactRead, "content"> {
+  /** Absent when the file does not exist. */
+  content: Buffer | undefined;
+}
+
 export interface WriteOptions {
   /** The log position the write was based on. Omit for a first write, or if
    * you deliberately do not care what you are overwriting. */
@@ -126,10 +131,15 @@ export function listArtifacts(room: Room): ArtifactInfo[] {
 }
 
 /**
- * Reads a path's current contents. A missing file is not an error — it comes
- * back as `exists: false` so a caller can check before deciding whether to
- * write — but a path that tries to escape the room or reach into `.atrium/`
+ * Reads a path's current contents as text. A missing file is not an error — it
+ * comes back as `exists: false` so a caller can check before deciding whether
+ * to write — but a path that tries to escape the room or reach into `.atrium/`
  * still throws, via `resolveArtifact`.
+ *
+ * The contents are decoded as UTF-8, so this is for the text an agent actually
+ * works with. Anything that is not valid UTF-8 loses bytes to replacement
+ * characters and will not survive a round trip; use {@link readArtifactBytes}
+ * for images and other binary files.
  */
 export function readArtifact(room: Room, path: string): ArtifactRead {
   const abs = resolveArtifact(room.dir, path);
@@ -141,6 +151,25 @@ export function readArtifact(room: Room, path: string): ArtifactRead {
   }
 
   return { path: relPath, content: readFileSync(abs, "utf8"), exists: true, seq };
+}
+
+/**
+ * Reads a path's current contents as raw bytes.
+ *
+ * Writing accepts a `Uint8Array`, so reading has to be able to give one back.
+ * Without this, a PNG written into a room and read out again comes back as
+ * mangled UTF-8 rather than the file that went in, and nothing complains.
+ */
+export function readArtifactBytes(room: Room, path: string): ArtifactReadBytes {
+  const abs = resolveArtifact(room.dir, path);
+  const relPath = toArtifactPath(room.dir, abs);
+  const seq = seqOf(room, relPath);
+
+  if (!existsSync(abs)) {
+    return { path: relPath, content: undefined, exists: false, seq };
+  }
+
+  return { path: relPath, content: readFileSync(abs), exists: true, seq };
 }
 
 /**
