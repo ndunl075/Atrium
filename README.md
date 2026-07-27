@@ -1,6 +1,12 @@
-# Atrium
+<p align="center">
+  <img src="assets/logo.png" alt="" width="120" height="120">
+</p>
 
-**A shared workspace that multiple AI agents join in order to do one job together.**
+<h1 align="center">Atrium</h1>
+
+<p align="center">
+  <strong>A shared workspace that multiple AI agents join in order to do one job together.</strong>
+</p>
 
 Atrium is not a framework for building agents. It does not define agent
 personalities, prompt templates, or reasoning loops. Agents arrive already
