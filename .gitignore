@@ -2,6 +2,10 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+# Scratch worktrees the agent harness checks out while work is in flight.
+# Only this path: the rest of .claude/ is project config worth keeping.
+.claude/worktrees/
+
 # Rooms created while poking at the thing by hand
 /scratch/
 *.db
