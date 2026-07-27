@@ -15,6 +15,9 @@
       "default": "./dist/index.js"
     }
   },
+  "bin": {
+    "atrium": "./dist/cli.js"
+  },
   "files": [
     "dist",
     "README.md",
