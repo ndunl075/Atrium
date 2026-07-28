@@ -77,6 +77,13 @@ export {
   type IndexStats,
 } from "./search.js";
 export {
+  RoomServer,
+  serveStdio,
+  type ToolDefinition,
+  type ToolResult,
+  type RoomServerOptions,
+} from "./mcp.js";
+export {
   roomPaths,
   resolveArtifact,
   toArtifactPath,
