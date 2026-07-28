@@ -37,6 +37,7 @@ const TASK_EVENT_TYPES = [
   "task.accepted",
   "task.rejected",
   "task.escalated",
+  "task.unescalated",
 ] as const;
 
 /** A moment before any real claim could have been made against. */
@@ -218,6 +219,38 @@ export function releaseTask(
       memberId: task.claimedBy,
       reason: "voluntary",
     });
+
+    return requireTask(readBoard(room), taskId);
+  });
+}
+
+/**
+ * Un-freezes an escalated task so it can be claimed again. ARCHITECTURE.md
+ * section 6: three rejections escalates a task and freezes it, and only a
+ * human can restart it, so this is gated the same way `reviewTask`'s human
+ * acceptance is. The attempt counter is left alone on purpose — the log
+ * should still show that this task has a history, not pretend it is fresh —
+ * so a single further rejection escalates it again.
+ */
+export function restartTask(
+  room: Room,
+  actorId: MemberId,
+  taskId: TaskId,
+): Task {
+  room.assertUsable();
+  room.requireRole(actorId, ["human"]);
+
+  return room.log.transaction(() => {
+    const task = requireTask(readBoard(room), taskId);
+
+    if (!task.escalated) {
+      throw new InvalidError(
+        `${taskId} is not escalated, so there is nothing to restart.`,
+        { taskId },
+      );
+    }
+
+    room.log.append(actorId, "task.unescalated", { taskId });
 
     return requireTask(readBoard(room), taskId);
   });

@@ -26,17 +26,23 @@ import {
   InvalidError,
   Room,
   costSummary,
+  createTask,
+  currentLease,
   describeHistory,
   diffArtifact,
   foldTasks,
   getContext,
+  getTask,
   listTasks,
   listVersions,
+  releaseTask,
+  restartTask,
+  reviewTask,
   searchArtifacts,
 } from "./index.js";
 import { serveHttp } from "./http.js";
 import { serveStdio } from "./mcp.js";
-import type { MemberRole, Task, TaskState } from "./index.js";
+import type { Acceptance, MemberId, MemberRole, Task, TaskState, Verdict } from "./index.js";
 
 export interface Sink {
   out(line: string): void;
@@ -836,6 +842,435 @@ export function cmdDiff(argv: string[], sink: Sink): number {
 }
 
 // ---------------------------------------------------------------------------
+// task — the human's hands on the board
+// ---------------------------------------------------------------------------
+//
+// ARCHITECTURE.md §3.2 gives `human` "everything a reviewer can do, plus
+// running the room," but until now the CLI could only look at a room, never
+// act on it. These five subcommands are that missing hand: putting a task on
+// the board, giving a verdict, forcing a stuck claim back, and restarting a
+// task that froze after too many rejections.
+//
+// Every one of them needs a member id to act as. Two designs were on the
+// table:
+//
+//   - `--as <member>` naming any existing member by id, decided per call.
+//   - A single, stable, auto-provisioned "human" member the CLI always is.
+//
+// `--as` is more flexible but more surprising: it lets the same command line
+// accept work under one identity and reject it under another, which is
+// exactly the self-declared-completion hole ARCHITECTURE.md §5 exists to
+// close, and it means whoever runs the CLI has to already know a member id
+// before "atrium task add" works at all. A stable local human member needs
+// no setup, is always the same "person" across invocations of the CLI on
+// this machine, and — because `reviewTask` already refuses a submitter its
+// own verdict regardless of role — can never accept its own work by
+// accident. `ensureCliHuman` below provisions that member once, the first
+// time any of these subcommands touches a room, and finds it by name on
+// every call after that so the roster does not grow a new "cli" member per
+// invocation.
+
+/** The name the CLI's own, auto-provisioned human member joins under. */
+const CLI_HUMAN_NAME = "cli";
+
+function ensureCliHuman(room: Room): MemberId {
+  const existing = room.roster().find((m) => m.name === CLI_HUMAN_NAME && m.active);
+  if (existing) {
+    if (existing.role !== "human") {
+      throw new InvalidError(
+        `A member named "${CLI_HUMAN_NAME}" already exists in this room but is a ` +
+          `${existing.role}, not a human, so the CLI cannot use it to administer tasks. ` +
+          "Rename or remove that member first.",
+        { memberId: existing.id, role: existing.role },
+      );
+    }
+    return existing.id;
+  }
+  return room.join({
+    name: CLI_HUMAN_NAME,
+    role: "human",
+    manifest:
+      "Auto-provisioned local identity the atrium CLI uses for task administration " +
+      "(add, review, release, unblock).",
+  }).member.id;
+}
+
+function acceptanceLabel(acceptance: Task["acceptance"]): string {
+  switch (acceptance.kind) {
+    case "command":
+      return `command — "${acceptance.command}" must exit 0`;
+    case "reviewer":
+      return "reviewer — a different member must accept";
+    case "human":
+      return "human — a human must accept";
+    case "none":
+      return "none — auto-accepts on submit";
+  }
+}
+
+/** Parses `--acceptance` and `--command` together, since one only makes sense
+ * with the other. Returns `undefined` (not an error) when neither is given,
+ * so `createTask`'s own default of `reviewer` applies. */
+function parseAcceptanceFlag(
+  sink: Sink,
+  kind: string | undefined,
+  command: string | undefined,
+): { ok: true; value: Acceptance | undefined } | { ok: false } {
+  if (kind === undefined) {
+    if (command !== undefined) {
+      sink.err("--command only makes sense together with --acceptance command.");
+      return { ok: false };
+    }
+    return { ok: true, value: undefined };
+  }
+  if (kind !== "command" && kind !== "reviewer" && kind !== "human" && kind !== "none") {
+    sink.err(`--acceptance must be one of command, reviewer, human, none (got "${kind}").`);
+    return { ok: false };
+  }
+  if (kind === "command") {
+    if (!command || !command.trim()) {
+      sink.err('--acceptance command needs --command "the shell command to run".');
+      return { ok: false };
+    }
+    return { ok: true, value: { kind: "command", command } };
+  }
+  if (command !== undefined) {
+    sink.err("--command only makes sense together with --acceptance command.");
+    return { ok: false };
+  }
+  return { ok: true, value: { kind } };
+}
+
+const TASK_ADD_HELP = `Usage: atrium task add <room> --title <title> [options]
+
+Creates a task and puts it on the board. Prints the new task's id.
+
+Options:
+  --title <title>            the task's title (required)
+  --description <text>       longer description (default: empty)
+  --depends-on <id,id,...>   task ids that must be accepted before this one
+  --acceptance <kind>        command, reviewer, human, or none (default: reviewer)
+  --command <shell command>  required when --acceptance is command
+  --help, -h                 show this help
+
+A room with allowUncheckedAcceptance turned off (the default) refuses
+--acceptance none: self-declared completion is the failure this project
+exists to prevent (ARCHITECTURE.md §5).
+`;
+
+export function cmdTaskAdd(argv: string[], sink: Sink): number {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: {
+      help: { type: "boolean", short: "h" },
+      title: { type: "string" },
+      description: { type: "string" },
+      "depends-on": { type: "string" },
+      acceptance: { type: "string" },
+      command: { type: "string" },
+    },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(TASK_ADD_HELP);
+    return 0;
+  }
+
+  const acceptance = parseAcceptanceFlag(sink, values.acceptance, values.command);
+  if (!acceptance.ok) return 2;
+
+  const dependsOn = (values["depends-on"] ?? "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter((id) => id.length > 0);
+
+  const dir = positionals[0] ?? process.cwd();
+  const room = openRoom(dir);
+  try {
+    const actorId = ensureCliHuman(room);
+    const task = createTask(room, actorId, {
+      title: values.title ?? "",
+      description: values.description ?? "",
+      dependsOn,
+      acceptance: acceptance.value,
+    });
+    sink.out(`Created ${task.id} ("${task.title}").`);
+    return 0;
+  } finally {
+    room.close();
+  }
+}
+
+const TASK_SHOW_HELP = `Usage: atrium task show <id> <room>
+
+Full detail on one task: state, acceptance, dependencies and which of them
+are still unmet, claim info, attempts, the last rejection reason, and
+whether it has been escalated.
+
+Options:
+  --json       print machine-readable JSON instead
+  --help, -h   show this help
+`;
+
+export function cmdTaskShow(argv: string[], sink: Sink): number {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: {
+      help: { type: "boolean", short: "h" },
+      json: { type: "boolean" },
+    },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(TASK_SHOW_HELP);
+    return 0;
+  }
+
+  const taskId = positionals[0];
+  if (taskId === undefined) {
+    sink.err('task show needs a task id, e.g. "atrium task show task_abc123 ./room".');
+    return 2;
+  }
+
+  const dir = positionals[1] ?? process.cwd();
+  const room = openRoom(dir);
+  try {
+    const task = getTask(room, taskId);
+    const byId = new Map(listTasks(room).map((t) => [t.id, t] as const));
+    const unmet = task.dependsOn.filter((id) => byId.get(id)?.state !== "accepted");
+
+    // Leases live on artifact paths, not on tasks, but a lease still held on a
+    // path this task's submission touched is exactly the kind of thing a
+    // human deciding a stuck task would want to see.
+    const leases = (task.submittedArtifacts ?? [])
+      .map((path) => ({ path, lease: currentLease(room, path) }))
+      .filter(
+        (entry): entry is { path: string; lease: NonNullable<typeof entry.lease> } =>
+          entry.lease !== undefined,
+      );
+
+    if (values.json) {
+      sink.out(JSON.stringify({ ...task, unmetDependencies: unmet, activeLeases: leases }, null, 2));
+      return 0;
+    }
+
+    sink.out(bold(`${task.id} — ${task.title}`));
+    if (task.description) sink.out(`  ${task.description}`);
+    sink.out("");
+    sink.out(
+      `  state: ${task.state}` +
+        (task.escalated ? " (escalated — needs a human to restart it)" : ""),
+    );
+    sink.out(`  acceptance: ${acceptanceLabel(task.acceptance)}`);
+    sink.out(
+      `  depends on: ${task.dependsOn.length > 0 ? task.dependsOn.join(", ") : "(none)"}` +
+        (unmet.length > 0 ? ` — unmet: ${unmet.join(", ")}` : ""),
+    );
+    if (task.claimedBy) {
+      sink.out(`  claimed by ${task.claimedBy}, expires ${task.claimExpiresAt}`);
+    }
+    if (task.submittedBy) {
+      sink.out(
+        `  submitted by ${task.submittedBy} at ${task.submittedAt}: ${task.submissionSummary}`,
+      );
+    }
+    sink.out(`  attempts: ${task.attempts}`);
+    if (task.lastRejection) {
+      sink.out(
+        `  last rejection: by ${task.lastRejection.by} at ${task.lastRejection.at}: ` +
+          task.lastRejection.reason,
+      );
+    }
+    for (const entry of leases) {
+      sink.out(`  lease on ${entry.path}: held by ${entry.lease.holder} until ${entry.lease.expiresAt}`);
+    }
+    return 0;
+  } finally {
+    room.close();
+  }
+}
+
+const TASK_REVIEW_HELP = `Usage: atrium task review <id> <room> --accept|--reject [options]
+
+Records a human verdict on submitted work. Goes through the same
+reviewTask path every verdict goes through, so the same rules apply — most
+importantly, whoever submitted the work can never be the one who accepts or
+rejects it (ARCHITECTURE.md §5).
+
+Options:
+  --accept          accept the submitted work
+  --reject          reject it (needs --reason)
+  --reason <text>   why it was rejected (required with --reject)
+  --help, -h        show this help
+`;
+
+export function cmdTaskReview(argv: string[], sink: Sink): number {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: {
+      help: { type: "boolean", short: "h" },
+      accept: { type: "boolean" },
+      reject: { type: "boolean" },
+      reason: { type: "string" },
+    },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(TASK_REVIEW_HELP);
+    return 0;
+  }
+
+  if (values.accept && values.reject) {
+    sink.err("Choose either --accept or --reject, not both.");
+    return 2;
+  }
+  if (!values.accept && !values.reject) {
+    sink.err("task review needs a verdict: --accept or --reject.");
+    return 2;
+  }
+  if (values.reject && (!values.reason || !values.reason.trim())) {
+    sink.err('--reject needs --reason, e.g. --reject --reason "tests still fail".');
+    return 2;
+  }
+
+  const taskId = positionals[0];
+  if (taskId === undefined) {
+    sink.err('task review needs a task id, e.g. "atrium task review task_abc123 ./room --accept".');
+    return 2;
+  }
+  const dir = positionals[1] ?? process.cwd();
+
+  const room = openRoom(dir);
+  try {
+    const actorId = ensureCliHuman(room);
+    const verdict: Verdict = values.accept
+      ? { accept: true }
+      : { accept: false, reason: values.reason! };
+    const task = reviewTask(room, actorId, taskId, verdict);
+    sink.out(`${taskId} is now ${task.state}.`);
+    return 0;
+  } finally {
+    room.close();
+  }
+}
+
+const TASK_RELEASE_HELP = `Usage: atrium task release <id> <room>
+
+Forces a claimed task back onto the board, regardless of who holds the
+claim — for a worker that is stuck or gone and cannot be waited out until
+its lease lapses on its own.
+
+Options:
+  --help, -h   show this help
+`;
+
+export function cmdTaskRelease(argv: string[], sink: Sink): number {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: { help: { type: "boolean", short: "h" } },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(TASK_RELEASE_HELP);
+    return 0;
+  }
+
+  const taskId = positionals[0];
+  if (taskId === undefined) {
+    sink.err('task release needs a task id, e.g. "atrium task release task_abc123 ./room".');
+    return 2;
+  }
+  const dir = positionals[1] ?? process.cwd();
+
+  const room = openRoom(dir);
+  try {
+    const actorId = ensureCliHuman(room);
+    const task = releaseTask(room, actorId, taskId);
+    sink.out(`${taskId} released; back to ${task.state}.`);
+    return 0;
+  } finally {
+    room.close();
+  }
+}
+
+const TASK_UNBLOCK_HELP = `Usage: atrium task unblock <id> <room>
+
+Restarts a task that froze after too many rejections. ARCHITECTURE.md §6:
+three rejections escalates a task and only a human can restart it. The
+attempt count is left as it was, so the log still shows the task's history
+rather than pretending it is fresh.
+
+Options:
+  --help, -h   show this help
+`;
+
+export function cmdTaskUnblock(argv: string[], sink: Sink): number {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: { help: { type: "boolean", short: "h" } },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(TASK_UNBLOCK_HELP);
+    return 0;
+  }
+
+  const taskId = positionals[0];
+  if (taskId === undefined) {
+    sink.err('task unblock needs a task id, e.g. "atrium task unblock task_abc123 ./room".');
+    return 2;
+  }
+  const dir = positionals[1] ?? process.cwd();
+
+  const room = openRoom(dir);
+  try {
+    const actorId = ensureCliHuman(room);
+    const task = restartTask(room, actorId, taskId);
+    sink.out(`${taskId} restarted; ${task.state} and claimable again.`);
+    return 0;
+  } finally {
+    room.close();
+  }
+}
+
+const TASK_HELP = `Usage: atrium task <subcommand> [options]
+
+Subcommands:
+  add <room> --title T [options]        create a task and print its id
+  show <id> <room> [--json]             full detail on one task
+  review <id> <room> --accept|--reject  a human verdict on submitted work
+  release <id> <room>                   force a claimed task back to the board
+  unblock <id> <room>                   restart a task frozen by escalation
+
+Run "atrium task <subcommand> --help" for details on any one.
+`;
+
+export function cmdTask(argv: string[], sink: Sink): number {
+  const [sub, ...rest] = argv;
+
+  if (sub === undefined || sub === "--help" || sub === "-h") {
+    sink.out(TASK_HELP);
+    return 0;
+  }
+
+  switch (sub) {
+    case "add":
+      return cmdTaskAdd(rest, sink);
+    case "show":
+      return cmdTaskShow(rest, sink);
+    case "review":
+      return cmdTaskReview(rest, sink);
+    case "release":
+      return cmdTaskRelease(rest, sink);
+    case "unblock":
+      return cmdTaskUnblock(rest, sink);
+    default:
+      sink.err(`Unknown "atrium task" subcommand "${sub}". Run "atrium task --help" for the list.`);
+      return 2;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch and entry point
 // ---------------------------------------------------------------------------
 
@@ -856,6 +1291,7 @@ Commands:
   history <path> [dir]  every version an artifact has had
   diff <path> [dir]     a unified diff between two versions of an artifact
   serve [dir]           serve the room to an MCP client over stdin/stdout
+  task <subcommand>     create, inspect, and administer tasks — see "atrium task --help"
 
 Run "atrium <command> --help" for details on any command.
 
@@ -911,6 +1347,8 @@ function dispatch(argv: string[], sink: Sink): number {
       return cmdHistory(rest, sink);
     case "diff":
       return cmdDiff(rest, sink);
+    case "task":
+      return cmdTask(rest, sink);
     default:
       sink.err(`Unknown command "${command}". Run "atrium --help" for the list of commands.`);
       return 2;

@@ -186,6 +186,8 @@ export interface EventMap {
     reason: string;
   };
   "task.escalated": { taskId: TaskId; attempts: number };
+  /** Only a human can record this: it is what un-freezes an escalated task. */
+  "task.unescalated": { taskId: TaskId };
 
   "artifact.written": {
     path: string;

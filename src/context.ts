@@ -215,6 +215,9 @@ function describeEvent(
     case "task.escalated":
       return `${taskLabel(event.data.taskId)} was escalated after ${event.data.attempts} rejections; it needs a human.`;
 
+    case "task.unescalated":
+      return `${taskLabel(event.data.taskId)} was restarted by a human and can be claimed again.`;
+
     case "artifact.written":
       return `${actorName(event.data.memberId)} wrote ${event.data.path} (${event.data.bytes} bytes).`;
 

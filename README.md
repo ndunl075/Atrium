@@ -107,6 +107,24 @@ node dist/cli.js history draft.md ./newsroom  # every version this file has had
 node dist/cli.js diff draft.md ./newsroom     # what changed between the last two
 ```
 
+Or put a hand on the board yourself, the same way a human member would:
+
+```sh
+node dist/cli.js task add ./newsroom --title "Fact-check the draft"
+node dist/cli.js task show <task-id> ./newsroom
+node dist/cli.js task review <task-id> ./newsroom --accept
+node dist/cli.js task review <task-id> ./newsroom --reject --reason "cites a dead link"
+node dist/cli.js task release <task-id> ./newsroom   # a claim stuck on a crashed agent
+node dist/cli.js task unblock <task-id> ./newsroom   # restart a task frozen after too many rejections
+```
+
+These all act as a single, auto-provisioned "cli" member with the `human`
+role — created the first time any of them touches a room, then reused, so
+there is nothing to configure and no member id to look up first. Reviewing
+still goes through the same rule everything else does: whoever submitted the
+work, including that member itself, can never be the one who accepts or
+rejects it.
+
 ## What a room looks like from a client
 
 Sixteen tools, and the ones that matter are `join`, `list_tasks`, `claim_task`,

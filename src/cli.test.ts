@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { Room } from "./room.js";
 import { claimTask, createTask } from "./board.js";
+import { reviewTask, submitTask } from "./acceptance.js";
 import { acquireLease } from "./leases.js";
 import { writeArtifact } from "./artifacts.js";
 import {
@@ -19,6 +20,11 @@ import {
   cmdReplay,
   cmdSearch,
   cmdServe,
+  cmdTaskAdd,
+  cmdTaskRelease,
+  cmdTaskReview,
+  cmdTaskShow,
+  cmdTaskUnblock,
   runCli,
   type Sink,
 } from "./cli.js";
@@ -568,5 +574,178 @@ describe("serve", () => {
   it("refuses a directory that is not a room", async () => {
     const dir = tempDir();
     await expect(cmdServe([dir], sink())).rejects.toThrow(/not an Atrium room/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// task — the human's hands on the board
+// ---------------------------------------------------------------------------
+
+describe("task add", () => {
+  it("creates a task and prints its id", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+
+    const code = cmdTaskAdd([dir, "--title", "Write the draft"], s);
+
+    expect(code).toBe(0);
+    const printed = s.outLines.join("\n");
+    expect(printed).toMatch(/Created task_/);
+
+    const board = sink();
+    cmdBoard(["--json", dir], board);
+    const tasks = JSON.parse(board.outLines.join("\n"));
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].title).toBe("Write the draft");
+    expect(tasks[0].acceptance).toEqual({ kind: "reviewer" });
+  });
+
+  it('refuses "none" acceptance when the room forbids it, and says why', () => {
+    // allowUncheckedAcceptance is off by default.
+    const { dir } = tempRoom();
+    const s = sink();
+
+    const code = runCli(["task", "add", dir, "--title", "Quick thing", "--acceptance", "none"], s);
+
+    expect(code).not.toBe(0);
+    expect(s.errLines.join("\n")).toMatch(/does not allow "none"/);
+  });
+
+  it("provisions a stable local human member the first time it runs", () => {
+    const { dir, room } = tempRoom();
+    cmdTaskAdd([dir, "--title", "one"], sink());
+    cmdTaskAdd([dir, "--title", "two"], sink());
+
+    const humans = room.roster().filter((m) => m.role === "human");
+    expect(humans).toHaveLength(1);
+  });
+});
+
+describe("task show", () => {
+  it("reports state, acceptance, dependencies, attempts, and escalation", () => {
+    const { dir, room } = tempRoom();
+    const worker = room.join({ name: "scout", role: "worker" }).member;
+    const dep = createTask(room, worker.id, { title: "research" });
+    const task = createTask(room, worker.id, { title: "draft", dependsOn: [dep.id] });
+
+    const s = sink();
+    const code = cmdTaskShow(["--json", task.id, dir], s);
+    const data = JSON.parse(s.outLines.join("\n"));
+
+    expect(code).toBe(0);
+    expect(data.id).toBe(task.id);
+    expect(data.state).toBe("blocked");
+    expect(data.unmetDependencies).toEqual([dep.id]);
+    expect(data.attempts).toBe(0);
+    expect(data.escalated).toBe(false);
+  });
+});
+
+describe("task review", () => {
+  it("requires --reason when rejecting", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+
+    const code = cmdTaskReview(["task_whatever", dir, "--reject"], s);
+
+    expect(code).not.toBe(0);
+    expect(s.errLines.join("\n")).toMatch(/--reason/);
+  });
+
+  it("lets a human accept submitted work", async () => {
+    const { dir, room } = tempRoom();
+    const worker = room.join({ name: "scout", role: "worker" }).member;
+    const task = createTask(room, worker.id, { title: "draft" });
+    claimTask(room, worker.id, task.id);
+    await submitTask(room, worker.id, task.id, { summary: "first pass" });
+
+    const s = sink();
+    const code = cmdTaskReview([task.id, dir, "--accept"], s);
+
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/accepted/);
+  });
+
+  it("still refuses a member accepting its own work, even for the cli's own human identity", async () => {
+    const { dir, room } = tempRoom();
+
+    // Provision the CLI's own identity first, exactly as "atrium task add" would.
+    cmdTaskAdd([dir, "--title", "solo work"], sink());
+    const cli = room.roster().find((m) => m.name === "cli")!;
+    const board = sink();
+    cmdBoard(["--json", dir], board);
+    const taskId = JSON.parse(board.outLines.join("\n"))[0].id as string;
+
+    claimTask(room, cli.id, taskId);
+    await submitTask(room, cli.id, taskId, { summary: "did it myself" });
+
+    const s = sink();
+    const code = runCli(["task", "review", taskId, dir, "--accept"], s);
+
+    expect(code).not.toBe(0);
+    expect(s.errLines.join("\n")).toMatch(/cannot also be the one who checks it/);
+  });
+});
+
+describe("task release", () => {
+  it("forces a claimed task back onto the board", () => {
+    const { dir, room } = tempRoom();
+    const worker = room.join({ name: "scout", role: "worker" }).member;
+    const task = createTask(room, worker.id, { title: "draft" });
+    claimTask(room, worker.id, task.id);
+
+    const s = sink();
+    const code = cmdTaskRelease([task.id, dir], s);
+
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/released/);
+
+    const show = sink();
+    cmdTaskShow(["--json", task.id, dir], show);
+    expect(JSON.parse(show.outLines.join("\n")).state).toBe("open");
+  });
+});
+
+describe("task unblock", () => {
+  it("restarts a task frozen by escalation, leaving its attempt count alone", async () => {
+    const { dir, room } = tempRoom({ config: { maxAttempts: 1 } });
+    const worker = room.join({ name: "scout", role: "worker" }).member;
+    const reviewer = room.join({ name: "critic", role: "reviewer" }).member;
+    const task = createTask(room, worker.id, { title: "draft" });
+    claimTask(room, worker.id, task.id);
+    await submitTask(room, worker.id, task.id, { summary: "v1" });
+    reviewTask(room, reviewer.id, task.id, { accept: false, reason: "not good enough" });
+
+    const before = sink();
+    cmdTaskShow(["--json", task.id, dir], before);
+    expect(JSON.parse(before.outLines.join("\n")).escalated).toBe(true);
+
+    const s = sink();
+    const code = cmdTaskUnblock([task.id, dir], s);
+
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/restarted/);
+
+    const after = sink();
+    cmdTaskShow(["--json", task.id, dir], after);
+    const data = JSON.parse(after.outLines.join("\n"));
+    expect(data.escalated).toBe(false);
+    expect(data.attempts).toBe(1);
+
+    // And it can actually be claimed again.
+    const claimed = claimTask(room, worker.id, task.id);
+    expect(claimed.state).toBe("claimed");
+  });
+
+  it("refuses to restart a task that was never escalated", () => {
+    const { dir, room } = tempRoom();
+    const worker = room.join({ name: "scout", role: "worker" }).member;
+    const task = createTask(room, worker.id, { title: "draft" });
+
+    const s = sink();
+    const code = runCli(["task", "unblock", task.id, dir], s);
+
+    expect(code).not.toBe(0);
+    expect(s.errLines.join("\n")).toMatch(/not escalated/);
   });
 });
