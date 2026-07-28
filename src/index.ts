@@ -100,3 +100,8 @@ export {
   sha256,
   estimateTokens,
 } from "./util.js";
+export {
+  serveHttp,
+  type ServeHttpOptions,
+  type HttpServerHandle,
+} from "./http.js";

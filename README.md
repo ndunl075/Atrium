@@ -80,6 +80,15 @@ Point an MCP client at it. In most clients that is one config entry:
 The agent calls `join` first, which hands back a session token and the brief.
 There is no SDK to install and nothing Atrium-specific to write.
 
+For a client that cannot spawn a process — a browser, or anything across a
+container boundary — run `atrium serve ./newsroom --http` instead, and point
+it at `http://127.0.0.1:<port>/mcp` with a single JSON-RPC endpoint (`POST`
+only; `GET` answers 405). It binds to `127.0.0.1` and stays off the network by
+default. Every request needs `Authorization: Bearer <token>`, since anything
+on the machine can reach an HTTP port and there is no anonymous `join` over
+it — get a token with `atrium invite ./newsroom --name scout --role worker`
+first, the same token a stdio client would get back from `join`.
+
 Watch what happens from the outside:
 
 ```sh
