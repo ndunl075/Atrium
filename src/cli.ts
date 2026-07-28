@@ -32,6 +32,7 @@ import {
   listTasks,
   searchArtifacts,
 } from "./index.js";
+import { serveHttp } from "./http.js";
 import { serveStdio } from "./mcp.js";
 import type { MemberRole, Task, TaskState } from "./index.js";
 
@@ -789,30 +790,43 @@ export function runCli(argv: string[], sink: Sink): number {
   }
 }
 
-const SERVE_HELP = `atrium serve — serve a room to an MCP client over stdin/stdout
+const SERVE_HELP = `atrium serve — serve a room to an MCP client
 
 Usage: atrium serve [dir] [options]
 
-Point an MCP client at this. In most clients that means a config entry
-along the lines of:
+By default this speaks MCP over stdin/stdout. Point an MCP client at it with
+a config entry along the lines of:
 
   { "command": "atrium", "args": ["serve", "/path/to/room"] }
 
 The agent calls the "join" tool first, which hands back a session token
 and the room's shared brief.
 
+Pass --http for a client that cannot spawn a process — a browser, or
+anything across a container boundary. That serves the same tools over
+HTTP instead, as a single POST endpoint (default "/mcp") taking JSON-RPC
+messages. Every request needs "Authorization: Bearer <token>": run
+"atrium invite" first to mint one, since there is no anonymous "join"
+over HTTP. The server binds to 127.0.0.1 only, by design; pass --host to
+change that deliberately.
+
 Options:
   --token <token>  rejoin as an existing member instead of joining afresh
+                    (stdio only)
+  --http           serve over HTTP instead of stdio
+  --port <n>       HTTP port (default: an OS-assigned free port)
+  --host <host>    HTTP bind address (default: 127.0.0.1)
   --help, -h       show this help
 
-Nothing but protocol messages is written to stdout, so this is not a
-command to run by hand expecting output.
+Nothing but protocol messages is written to stdout in stdio mode, so
+that mode is not one to run by hand expecting output.
 `;
 
 /**
  * Kept apart from the other commands because it is a different shape: it runs
- * until the client closes the connection rather than printing something and
- * returning an exit code, and its stdout belongs to the protocol.
+ * until the client closes the connection (stdio) or the process is signalled
+ * to stop (HTTP), rather than printing something and returning an exit code.
+ * In stdio mode its stdout belongs to the protocol.
  */
 export async function cmdServe(argv: string[], sink: Sink): Promise<number> {
   const { values, positionals } = parseArgs({
@@ -820,6 +834,9 @@ export async function cmdServe(argv: string[], sink: Sink): Promise<number> {
     options: {
       help: { type: "boolean", short: "h" },
       token: { type: "string" },
+      http: { type: "boolean" },
+      port: { type: "string" },
+      host: { type: "string" },
     },
     allowPositionals: true,
   });
@@ -828,8 +845,35 @@ export async function cmdServe(argv: string[], sink: Sink): Promise<number> {
     return 0;
   }
 
+  let port: number | undefined;
+  if (values.port !== undefined) {
+    port = Number(values.port);
+    if (!Number.isInteger(port) || port < 0 || port > 65535) {
+      sink.err(`--port must be a whole number between 0 and 65535 (got "${values.port}").`);
+      return 2;
+    }
+  }
+
   const room = openRoom(positionals[0] ?? process.cwd());
   try {
+    if (values.http) {
+      const handle = await serveHttp(room, { port, host: values.host });
+      process.stderr.write(`atrium: serving ${room.config.name} over http at ${handle.url}\n`);
+      process.stderr.write(
+        `atrium: every request needs "Authorization: Bearer <token>" — run "atrium invite" for one\n`,
+      );
+      // Runs until told to stop: there is no equivalent of stdin closing for
+      // an HTTP server, so this command's own lifetime is a signal handler.
+      await new Promise<void>((resolve) => {
+        const shutdown = (): void => {
+          handle.close().then(resolve, resolve);
+        };
+        process.once("SIGINT", shutdown);
+        process.once("SIGTERM", shutdown);
+      });
+      return 0;
+    }
+
     // Announced on stderr: stdout is the protocol stream and must stay clean.
     process.stderr.write(`atrium: serving ${room.config.name} (${room.dir})\n`);
     await serveStdio(room, values.token ? { token: values.token } : {});
