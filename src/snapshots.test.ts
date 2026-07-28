@@ -8,11 +8,13 @@ import { acquireLease } from "./leases.js";
 import { deleteArtifact, writeArtifact } from "./artifacts.js";
 import {
   contentAt,
+  contentStateAt,
   diffArtifact,
   gcBlobs,
   isBinaryContent,
   listVersions,
   loadBlob,
+  pruneVersions,
   storeBlob,
 } from "./snapshots.js";
 import { sha256 } from "./util.js";
@@ -405,6 +407,136 @@ describe("gcBlobs", () => {
   it("is a no-op on a room that has never written an artifact", () => {
     const { room } = tempRoom();
     expect(gcBlobs(room)).toEqual({ kept: 0, removed: 0, bytesReclaimed: 0, paths: [] });
+  });
+});
+
+describe("pruneVersions", () => {
+  it("keeps the most recent N versions of each path and drops the rest", () => {
+    const { room } = tempRoom();
+    const a = worker(room, "a");
+    acquireLease(room, a.id, "draft.md");
+    const v1 = writeArtifact(room, a.id, "draft.md", "one");
+    const v2 = writeArtifact(room, a.id, "draft.md", "two");
+    const v3 = writeArtifact(room, a.id, "draft.md", "three");
+
+    const result = pruneVersions(room, { retain: 1 });
+
+    expect(result.droppedVersions).toBe(2);
+    expect(result.plans[0]?.seqs).toEqual([v1.seq, v2.seq]);
+    expect(contentAt(room, "draft.md", v3.seq)?.toString("utf8")).toBe("three");
+    // The versions themselves are still on record; only their bytes went.
+    expect(listVersions(room, "draft.md")).toHaveLength(3);
+  });
+
+  it("will not drop a blob a retained version of another path still points at", () => {
+    const { room } = tempRoom();
+    const a = worker(room, "a");
+    acquireLease(room, a.id, "draft.md");
+    acquireLease(room, a.id, "copy.md");
+
+    const shared = writeArtifact(room, a.id, "draft.md", "shared text");
+    writeArtifact(room, a.id, "draft.md", "moved on");
+    // Same bytes, so content-addressing gives both paths the same blob. This
+    // one is the only version of copy.md, so retain: 1 keeps it — and with it
+    // the blob that draft.md's droppable first version also points at.
+    writeArtifact(room, a.id, "copy.md", "shared text");
+
+    const result = pruneVersions(room, { retain: 1 });
+
+    // Nothing was dropped for draft.md: its old version's content is still
+    // live via copy.md, so it stays readable and is not reported as pruned.
+    expect(result.droppedVersions).toBe(0);
+    expect(contentAt(room, "draft.md", shared.seq)?.toString("utf8")).toBe("shared text");
+  });
+
+  it("reports a version whose content is gone as pruned, not as absent", () => {
+    const { room } = tempRoom();
+    const a = worker(room, "a");
+    acquireLease(room, a.id, "draft.md");
+    const v1 = writeArtifact(room, a.id, "draft.md", "one");
+    writeArtifact(room, a.id, "draft.md", "two");
+
+    pruneVersions(room, { retain: 1 });
+
+    const found = contentStateAt(room, "draft.md", v1.seq);
+    // "absent" would mean the path did not exist then, which is a different
+    // and false claim: it existed, and was written by a member.
+    expect(found.state).toBe("pruned");
+    if (found.state === "pruned") expect(found.bytes).toBe(3);
+    // A seq before the path was ever written is the genuinely absent case.
+    expect(contentStateAt(room, "draft.md", 1).state).toBe("absent");
+  });
+
+  it("records what it dropped in the log", () => {
+    const { room } = tempRoom();
+    const a = worker(room, "a");
+    acquireLease(room, a.id, "draft.md");
+    writeArtifact(room, a.id, "draft.md", "one");
+    writeArtifact(room, a.id, "draft.md", "two");
+
+    pruneVersions(room, { retain: 1 });
+
+    const [event] = room.log.read({ types: ["artifact.pruned"] });
+    expect(event?.type).toBe("artifact.pruned");
+    if (event?.type === "artifact.pruned") {
+      expect(event.data.path).toBe("draft.md");
+      expect(event.data.retained).toBe(1);
+      expect(event.data.seqs).toHaveLength(1);
+    }
+  });
+
+  it("changes nothing on a dry run", () => {
+    const { room } = tempRoom();
+    const a = worker(room, "a");
+    acquireLease(room, a.id, "draft.md");
+    const v1 = writeArtifact(room, a.id, "draft.md", "one");
+    writeArtifact(room, a.id, "draft.md", "two");
+
+    const result = pruneVersions(room, { retain: 1, dryRun: true });
+
+    expect(result.droppedVersions).toBe(1);
+    expect(contentAt(room, "draft.md", v1.seq)?.toString("utf8")).toBe("one");
+    expect(room.log.read({ types: ["artifact.pruned"] })).toHaveLength(0);
+  });
+
+  it("refuses a retention that would leave a path with no content at all", () => {
+    const { room } = tempRoom();
+    expect(() => pruneVersions(room, { retain: 0 })).toThrow(/1 or more/);
+  });
+});
+
+describe("diffing against pruned content", () => {
+  it("refuses to diff rather than treating the missing side as an empty file", () => {
+    const { room } = tempRoom();
+    const a = worker(room, "a");
+    acquireLease(room, a.id, "draft.md");
+    const v1 = writeArtifact(room, a.id, "draft.md", "one\ntwo\n");
+    const v2 = writeArtifact(room, a.id, "draft.md", "one\nTWO\n");
+
+    pruneVersions(room, { retain: 1 });
+    const diff = diffArtifact(room, "draft.md", v1.seq, v2.seq);
+
+    expect(diff.pruned).toBe(true);
+    expect(diff.identical).toBe(false);
+    expect(diff.patch).toMatch(/no longer retained/);
+    // The lie this replaces: every line of the old version shown as an
+    // addition against nothing.
+    expect(diff.patch).not.toContain("+one");
+  });
+
+  it("does not call two versions identical just because neither can be read", () => {
+    const { room } = tempRoom();
+    const a = worker(room, "a");
+    acquireLease(room, a.id, "draft.md");
+    const v1 = writeArtifact(room, a.id, "draft.md", "one");
+    const v2 = writeArtifact(room, a.id, "draft.md", "two");
+    writeArtifact(room, a.id, "draft.md", "three");
+
+    pruneVersions(room, { retain: 1 });
+    const diff = diffArtifact(room, "draft.md", v1.seq, v2.seq);
+
+    expect(diff.identical).toBe(false);
+    expect(diff.pruned).toBe(true);
   });
 });
 

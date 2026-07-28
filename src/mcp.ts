@@ -33,7 +33,7 @@ import { readArtifact, writeArtifact } from "./artifacts.js";
 import { reviewTask, submitTask } from "./acceptance.js";
 import { Room } from "./room.js";
 import { searchArtifacts } from "./search.js";
-import { contentAt } from "./snapshots.js";
+import { contentStateAt } from "./snapshots.js";
 import type { Acceptance, Member, MemberRole, TaskId } from "./types.js";
 
 /** Newest first. An older client gets its own version echoed back. */
@@ -203,12 +203,22 @@ export class RoomServer {
         // for a path that has since been deleted.
         if (args["seq"] === undefined) return readArtifact(this.room, path);
         const seq = num(args, "seq", 0);
-        const bytes = contentAt(this.room, path, seq);
+        const found = contentStateAt(this.room, path, seq);
+        // `exists` answers "was there a file here then", which a pruned
+        // version answers yes to. Reporting it as false because the bytes are
+        // gone would tell the agent the write never happened, and an agent
+        // told that has no reason to ask again or to look at the history.
         return {
           path,
           seq,
-          exists: bytes !== undefined,
-          content: bytes?.toString("utf8"),
+          exists: found.state !== "absent",
+          pruned: found.state === "pruned",
+          content: found.state === "present" ? found.bytes.toString("utf8") : undefined,
+          ...(found.state === "pruned"
+            ? {
+                note: `This version was written (${found.bytes} bytes) but its content is no longer retained, so it cannot be read back. Later versions of this path may still be readable.`,
+              }
+            : {}),
         };
       }
 

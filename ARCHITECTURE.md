@@ -88,6 +88,10 @@ Files in the Room's working directory. Real files on real disk, not abstractions
 
 Every write's content is retained, not just its hash. `artifact.written` records a sha256 of the bytes it wrote; the bytes themselves are kept in a content-addressed blob store under `.atrium/objects/<hash prefix>/<hash rest>`, keyed by that same hash. This is what makes replay mean something for artifacts specifically, not just for the board: `atrium history` lists every version a path has had, and `atrium diff` shows what changed between two of them, including a version from before the path was deleted. Content-addressing keeps it cheap — identical bytes are stored once no matter how many times they are written or under how many paths — and it is still not a VCS: there is no tree, no commit graph, no merge, just a flat store of blobs that the log's own sequence numbers give history to.
 
+Retention is explicit and manual. The store grows with the room by design, since a version that cannot be read back is not history; a room that sets `retainVersionsPerPath` can have `atrium prune` drop the content of older versions, but nothing discards anything on its own. `[ASSUMPTION]` A room's owner is better placed to decide what history is worth keeping than any policy Atrium could apply on a timer, so the policy is inert until somebody runs the command.
+
+Pruning removes bytes, never record. The `artifact.written` events stay, the versions keep listing, and an `artifact.pruned` event records what was dropped and under which setting — so a version whose content is missing can always be told apart from one that was never written, and a missing blob can be told apart from a damaged store. This distinction is load-bearing rather than cosmetic: everything that reads past content reports "written, no longer retained" as its own outcome, because the alternatives are all false statements. A diff against a pruned version refuses instead of showing the file as empty, and MCP's `read_artifact` reports `exists: true, pruned: true` rather than telling an agent the write never happened.
+
 ### 3.4 Tasks
 
 A work item on the board. States:

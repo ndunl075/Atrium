@@ -197,6 +197,22 @@ export interface EventMap {
   };
   "artifact.deleted": { path: string; memberId: MemberId };
 
+  /**
+   * Content dropped by a retention sweep. The versions themselves stay in the
+   * log and still list in `atrium history` — what is gone is their bytes.
+   * Recording it is the point: without this the log would show a version whose
+   * content cannot be read and give no way to tell "discarded on purpose"
+   * from "something has damaged the object store".
+   */
+  "artifact.pruned": {
+    path: string;
+    /** Log positions whose content was dropped, oldest first. */
+    seqs: number[];
+    bytesReclaimed: number;
+    /** The retention setting the sweep ran with. */
+    retained: number;
+  };
+
   "lease.acquired": { path: string; memberId: MemberId; expiresAt: string };
   "lease.renewed": { path: string; memberId: MemberId; expiresAt: string };
   "lease.released": {
@@ -281,6 +297,15 @@ export interface RoomConfig {
    * see ARCHITECTURE.md §6. Atrium can only total what gets reported to it.
    */
   roomSpendCapUsd: number;
+  /**
+   * Versions of each artifact whose content is kept on disk. `0` means keep
+   * everything, the same "0 means no cap" rule as the spend caps, and is the
+   * default: a room never discards history unless it is told to. Nothing is
+   * dropped automatically even when this is set — `atrium prune` applies it,
+   * so discarding history stays something a person does deliberately.
+   */
+  retainVersionsPerPath: number;
+
   /** USD, per member. Same "0 means no cap" rule as `roomSpendCapUsd`. */
   memberSpendCapUsd: number;
 }
@@ -294,5 +319,6 @@ export const DEFAULT_ROOM_CONFIG: Omit<RoomConfig, "id" | "name" | "createdAt"> 
     actionBudget: 1000,
     contextTokenCeiling: 8000,
     roomSpendCapUsd: 0,
+    retainVersionsPerPath: 0,
     memberSpendCapUsd: 0,
   };
