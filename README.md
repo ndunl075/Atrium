@@ -87,19 +87,29 @@ Point an MCP client at it. In most clients that is one config entry:
 The agent calls `join` first, which hands back a session token and the brief.
 There is no SDK to install and nothing Atrium-specific to write.
 
+For a client that cannot spawn a process — a browser, or anything across a
+container boundary — run `atrium serve ./newsroom --http` instead, and point
+it at `http://127.0.0.1:<port>/mcp` with a single JSON-RPC endpoint (`POST`
+only; `GET` answers 405). It binds to `127.0.0.1` and stays off the network by
+default. Every request needs `Authorization: Bearer <token>`, since anything
+on the machine can reach an HTTP port and there is no anonymous `join` over
+it — get a token with `atrium invite ./newsroom --name scout --role worker`
+first, the same token a stdio client would get back from `join`.
+
 Watch what happens from the outside:
 
 ```sh
 node dist/cli.js board ./newsroom     # what needs doing, and who has it
 node dist/cli.js log ./newsroom       # everything that happened, in order
 node dist/cli.js replay 12 ./newsroom # how the board looked at step 12
+node dist/cli.js cost ./newsroom      # self-reported spend against the caps, if any are set
 node dist/cli.js history draft.md ./newsroom  # every version this file has had
 node dist/cli.js diff draft.md ./newsroom     # what changed between the last two
 ```
 
 ## What a room looks like from a client
 
-Fifteen tools, and the ones that matter are `join`, `list_tasks`, `claim_task`,
+Sixteen tools, and the ones that matter are `join`, `list_tasks`, `claim_task`,
 `read_artifact`, `write_artifact`, `submit_task`, `review_task`.
 
 An agent that hands in work does not get to decide it is finished. Depending on
@@ -115,9 +125,15 @@ rejection that genuinely sends work back. `src/workflow.test.ts` is that job,
 written the way an agent would drive it, so it fails if the pieces stop adding
 up even when every unit test still passes.
 
-Not done yet: the read-only watch UI, embeddings, rooms spanning more than one
-machine, and cost enforcement. See [ARCHITECTURE.md](./ARCHITECTURE.md) for the
-full design, including the parts still marked open.
+Rooms can also set a per-room and per-member spend cap now (`atrium cost`,
+`report_cost`). It is honest advisory accounting, not enforcement: Atrium does
+not make the model calls, so it only totals what a member chooses to report,
+and a member that never reports is never charged. Crossing a cap halts the
+room the same way running out of action budget does.
+
+Not done yet: the read-only watch UI, embeddings, and rooms spanning more than
+one machine. See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design,
+including the parts still marked open.
 
 ## License
 
