@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,9 +9,13 @@ import { deleteArtifact, writeArtifact } from "./artifacts.js";
 import {
   contentAt,
   diffArtifact,
+  gcBlobs,
   isBinaryContent,
   listVersions,
+  loadBlob,
+  storeBlob,
 } from "./snapshots.js";
+import { sha256 } from "./util.js";
 
 const created: Array<{ room: Room; dir: string }> = [];
 
@@ -231,6 +235,176 @@ describe("content survives deletion", () => {
 
     const head = room.log.head();
     expect(contentAt(room, "draft.md", head)).toBeUndefined();
+  });
+});
+
+describe("trailing newlines", () => {
+  it("reports a difference of only the final newline, with git's marker", () => {
+    const { room } = tempRoom();
+    const a = worker(room, "a");
+    acquireLease(room, a.id, "draft.md");
+    const v1 = writeArtifact(room, a.id, "draft.md", "one\ntwo\n");
+    const v2 = writeArtifact(room, a.id, "draft.md", "one\ntwo");
+
+    const diff = diffArtifact(room, "draft.md", v1.seq, v2.seq);
+
+    expect(diff.identical).toBe(false);
+    // The bytes differ, so an empty patch would be the diff contradicting
+    // itself. The change is on the "to" side, which is the one missing it.
+    expect(diff.patch).not.toBe("");
+    expect(diff.patch).toContain("-two\n+two\n\\ No newline at end of file");
+  });
+
+  it("marks the from side when the newline is the thing being added", () => {
+    const { room } = tempRoom();
+    const a = worker(room, "a");
+    acquireLease(room, a.id, "draft.md");
+    const v1 = writeArtifact(room, a.id, "draft.md", "one\ntwo");
+    const v2 = writeArtifact(room, a.id, "draft.md", "one\ntwo\n");
+
+    const diff = diffArtifact(room, "draft.md", v1.seq, v2.seq);
+
+    expect(diff.patch).toContain("-two\n\\ No newline at end of file\n+two");
+  });
+
+  it("counts the marker outside the hunk's line counts, as git does", () => {
+    const { room } = tempRoom();
+    const a = worker(room, "a");
+    acquireLease(room, a.id, "draft.md");
+    const v1 = writeArtifact(room, a.id, "draft.md", "one\ntwo\n");
+    const v2 = writeArtifact(room, a.id, "draft.md", "one\ntwo");
+
+    expect(diffArtifact(room, "draft.md", v1.seq, v2.seq).patch).toContain("@@ -1,2 +1,2 @@");
+  });
+
+  it("still reports identical when the bytes really are identical", () => {
+    const { room } = tempRoom();
+    const a = worker(room, "a");
+    acquireLease(room, a.id, "draft.md");
+    const v1 = writeArtifact(room, a.id, "draft.md", "one\ntwo");
+    const v2 = writeArtifact(room, a.id, "draft.md", "one\ntwo");
+
+    const diff = diffArtifact(room, "draft.md", v1.seq, v2.seq);
+    expect(diff.identical).toBe(true);
+    expect(diff.patch).toBe("");
+  });
+});
+
+describe("diffing large artifacts", () => {
+  it("diffs a one-line edit in a big file without building a table over it", () => {
+    const { room } = tempRoom();
+    const a = worker(room, "a");
+    acquireLease(room, a.id, "big.txt");
+
+    const lines = Array.from({ length: 20_000 }, (_, i) => `line ${i}`);
+    const v1 = writeArtifact(room, a.id, "big.txt", lines.join("\n") + "\n");
+    lines[10_000] = "line 10000, edited";
+    const v2 = writeArtifact(room, a.id, "big.txt", lines.join("\n") + "\n");
+
+    // 20k x 20k is 400M cells, far past the budget. Trimming the common head
+    // and tail leaves a single changed line, so this is both minimal and
+    // cheap rather than falling back to a coarse patch.
+    const diff = diffArtifact(room, "big.txt", v1.seq, v2.seq);
+
+    expect(diff.patch).toContain("-line 10000\n+line 10000, edited");
+    expect(diff.patch).toContain("@@ -9998,7 +9998,7 @@");
+    expect(diff.patch.split("\n").length).toBeLessThan(15);
+  });
+
+  it("falls back to a whole-region replacement rather than allocating past the budget", () => {
+    const { room } = tempRoom();
+    const a = worker(room, "a");
+    acquireLease(room, a.id, "big.txt");
+
+    // Nothing in common, so head/tail trimming saves nothing and the table
+    // would be ~9M cells: over the budget, and the coarse patch is used.
+    const before = Array.from({ length: 3_000 }, (_, i) => `old ${i}`).join("\n") + "\n";
+    const after = Array.from({ length: 3_000 }, (_, i) => `new ${i}`).join("\n") + "\n";
+    const v1 = writeArtifact(room, a.id, "big.txt", before);
+    const v2 = writeArtifact(room, a.id, "big.txt", after);
+
+    const diff = diffArtifact(room, "big.txt", v1.seq, v2.seq);
+
+    expect(diff.identical).toBe(false);
+    // Coarse, but still a correct unified diff: it reconstructs the new file.
+    expect(applyToSide(diff.patch)).toBe(after);
+    expect(diff.patch).toContain("@@ -1,3000 +1,3000 @@");
+  });
+});
+
+describe("gcBlobs", () => {
+  it("keeps every blob the log still points at, including superseded ones", () => {
+    const { room } = tempRoom();
+    const a = worker(room, "a");
+    acquireLease(room, a.id, "draft.md");
+    const v1 = writeArtifact(room, a.id, "draft.md", "version one");
+    writeArtifact(room, a.id, "draft.md", "version two");
+
+    const result = gcBlobs(room);
+
+    expect(result.removed).toBe(0);
+    expect(result.kept).toBe(2);
+    // The point of keeping it: an old version is still readable afterwards.
+    expect(contentAt(room, "draft.md", v1.seq)?.toString("utf8")).toBe("version one");
+  });
+
+  it("removes content stored by a write that never recorded its event", () => {
+    const { room } = tempRoom();
+    const a = worker(room, "a");
+    acquireLease(room, a.id, "draft.md");
+    const v1 = writeArtifact(room, a.id, "draft.md", "kept");
+
+    // What writeArtifact leaves behind when it dies between storing the bytes
+    // and appending the event that would have referred to them.
+    const orphan = Buffer.from("nobody refers to this", "utf8");
+    const orphanHash = sha256(orphan);
+    storeBlob(room, orphanHash, orphan);
+    expect(loadBlob(room, orphanHash)).toBeDefined();
+
+    const result = gcBlobs(room);
+
+    expect(result.removed).toBe(1);
+    expect(result.kept).toBe(1);
+    expect(result.bytesReclaimed).toBe(orphan.length);
+    expect(loadBlob(room, orphanHash)).toBeUndefined();
+    expect(contentAt(room, "draft.md", v1.seq)?.toString("utf8")).toBe("kept");
+  });
+
+  it("sweeps temporary files left by a write that died before the rename", () => {
+    const { room } = tempRoom();
+    const a = worker(room, "a");
+    acquireLease(room, a.id, "draft.md");
+    writeArtifact(room, a.id, "draft.md", "kept");
+
+    const shard = join(room.paths.atrium, "objects", "ab");
+    mkdirSync(shard, { recursive: true });
+    writeFileSync(join(shard, "cdef.tmp-123-456"), "half-written");
+
+    const result = gcBlobs(room);
+
+    expect(result.paths).toEqual(["ab/cdef.tmp-123-456"]);
+    expect(result.kept).toBe(1);
+  });
+
+  it("reports without removing anything on a dry run", () => {
+    const { room } = tempRoom();
+    const a = worker(room, "a");
+    acquireLease(room, a.id, "draft.md");
+    writeArtifact(room, a.id, "draft.md", "kept");
+
+    const orphan = Buffer.from("orphan", "utf8");
+    const orphanHash = sha256(orphan);
+    storeBlob(room, orphanHash, orphan);
+
+    const result = gcBlobs(room, { dryRun: true });
+
+    expect(result.removed).toBe(1);
+    expect(loadBlob(room, orphanHash)).toBeDefined();
+  });
+
+  it("is a no-op on a room that has never written an artifact", () => {
+    const { room } = tempRoom();
+    expect(gcBlobs(room)).toEqual({ kept: 0, removed: 0, bytesReclaimed: 0, paths: [] });
   });
 });
 

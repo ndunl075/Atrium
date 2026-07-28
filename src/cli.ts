@@ -31,6 +31,7 @@ import {
   describeHistory,
   diffArtifact,
   foldTasks,
+  gcBlobs,
   getContext,
   getTask,
   listTasks,
@@ -842,6 +843,73 @@ export function cmdDiff(argv: string[], sink: Sink): number {
 }
 
 // ---------------------------------------------------------------------------
+// gc
+// ---------------------------------------------------------------------------
+
+const GC_HELP = `Usage: atrium gc [dir] [--dry-run]
+
+Removes anything in the room's object store that no log entry points at:
+content stored by a write that died before recording its event, and temporary
+files left by a write that died before the rename.
+
+This does not shrink history. Every version an artifact has ever had is
+referenced by the log and is kept — that is what makes "atrium history" and
+"atrium diff" work on versions that no longer exist on disk. A room that keeps
+working keeps growing, and only discarding history would change that.
+
+Options:
+  --dry-run    report what would be removed, without removing it
+  --json       print machine-readable JSON instead
+  --help, -h   show this help
+`;
+
+export function cmdGc(argv: string[], sink: Sink): number {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: {
+      help: { type: "boolean", short: "h" },
+      json: { type: "boolean" },
+      "dry-run": { type: "boolean" },
+    },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(GC_HELP);
+    return 0;
+  }
+
+  const dryRun = values["dry-run"] === true;
+  const room = openRoom(positionals[0] ?? process.cwd());
+  try {
+    const result = gcBlobs(room, { dryRun });
+
+    if (values.json) {
+      sink.out(JSON.stringify({ ...result, dryRun }, null, 2));
+      return 0;
+    }
+
+    if (result.removed === 0) {
+      sink.out(
+        dim(
+          result.kept === 0
+            ? "Nothing to reclaim; this room has not stored any content yet."
+            : `Nothing to reclaim; all ${result.kept} stored object${result.kept === 1 ? " is" : "s are"} still referenced.`,
+        ),
+      );
+      return 0;
+    }
+    sink.out(
+      `${dryRun ? "Would remove" : "Removed"} ${result.removed} unreferenced ` +
+        `object${result.removed === 1 ? "" : "s"} (${result.bytesReclaimed} bytes).`,
+    );
+    sink.out(dim(`${result.kept} referenced object${result.kept === 1 ? "" : "s"} kept.`));
+    return 0;
+  } finally {
+    room.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // task — the human's hands on the board
 // ---------------------------------------------------------------------------
 //
@@ -1290,6 +1358,7 @@ Commands:
   cost [dir]            per-member and room spend totals against the caps
   history <path> [dir]  every version an artifact has had
   diff <path> [dir]     a unified diff between two versions of an artifact
+  gc [dir]              remove stored content no log entry points at
   serve [dir]           serve the room to an MCP client over stdin/stdout
   task <subcommand>     create, inspect, and administer tasks — see "atrium task --help"
 
@@ -1347,6 +1416,8 @@ function dispatch(argv: string[], sink: Sink): number {
       return cmdHistory(rest, sink);
     case "diff":
       return cmdDiff(rest, sink);
+    case "gc":
+      return cmdGc(rest, sink);
     case "task":
       return cmdTask(rest, sink);
     default:

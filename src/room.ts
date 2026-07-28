@@ -121,7 +121,14 @@ export class Room {
         dir: paths.root,
       });
     }
-    const config = JSON.parse(readFileSync(paths.config, "utf8")) as RoomConfig;
+    // Layered over the defaults rather than trusted as-is. A room written
+    // before a config field existed has no value for it on disk, and reading
+    // that straight back would hand out a RoomConfig whose types lie: a
+    // `number` field holding `undefined`. Whether that degrades quietly or
+    // badly depends entirely on how the field happens to be used, so it is
+    // filled in here instead of being left to each reader to survive.
+    const stored = JSON.parse(readFileSync(paths.config, "utf8")) as Partial<RoomConfig>;
+    const config: RoomConfig = { ...DEFAULT_ROOM_CONFIG, ...stored } as RoomConfig;
     return new Room(paths, EventLog.open(paths.db), config);
   }
 

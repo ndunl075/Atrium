@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -78,6 +78,29 @@ describe("Room.create", () => {
       expect(again.config.name).toBe("reopen-me");
       expect(again.config.maxAttempts).toBe(7);
       expect(again.roster()).toHaveLength(1);
+    } finally {
+      again.close();
+    }
+  });
+
+  it("fills in settings a room predating them was never written with", () => {
+    const room = tempRoom({ name: "old-room" });
+    room.close();
+
+    // A room created before a config field existed, written back without it.
+    const stored = JSON.parse(readFileSync(room.paths.config, "utf8")) as Record<string, unknown>;
+    delete stored["roomSpendCapUsd"];
+    delete stored["maxAttempts"];
+    writeFileSync(room.paths.config, JSON.stringify(stored, null, 2), "utf8");
+
+    const again = Room.open(room.dir);
+    try {
+      // The default, not `undefined`: RoomConfig says these are numbers, and
+      // every reader is entitled to believe it.
+      expect(again.config.roomSpendCapUsd).toBe(0);
+      expect(again.config.maxAttempts).toBe(3);
+      // Settings that were on disk still win over the defaults.
+      expect(again.config.name).toBe("old-room");
     } finally {
       again.close();
     }

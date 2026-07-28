@@ -55,6 +55,15 @@ content back costs nothing — the blob is already there — so `atrium history`
 and `atrium diff` can show what a document actually said at any point the log
 remembers, not just that something was written.
 
+The cost of that is a store which only grows: every version the log refers to
+is kept, because being able to read it back later is the entire point. Plan
+for a long-lived room's `.atrium/` to be roughly the sum of every distinct
+version it has ever written. `atrium gc` reclaims what is genuinely garbage —
+bytes stored by a write that died before recording its event, and temporary
+files left by one that died before the rename — but it will not, and cannot,
+shrink history itself. Discarding history is the only thing that would, and
+that is a decision for whoever owns the room, not for a cleanup command.
+
 ## Getting a room going
 
 Node 22.5 or newer, and nothing else. Storage uses the `node:sqlite` module
