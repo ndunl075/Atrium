@@ -27,6 +27,7 @@ import {
 } from "./leases.js";
 import { claimTask, createTask, getTask, listTasks } from "./board.js";
 import { describeHistory, getContext, pinArtifact } from "./context.js";
+import { costSummary, reportCost } from "./cost.js";
 import { isAtriumError } from "./errors.js";
 import { readArtifact, writeArtifact } from "./artifacts.js";
 import { reviewTask, submitTask } from "./acceptance.js";
@@ -152,6 +153,12 @@ export class RoomServer {
           token: result.token,
           note: "Save this token. It is not recoverable, and it lets you rejoin as this member.",
           context: getContext(this.room),
+          // Only worth showing when a cap is actually set — a room that never
+          // configured one should look exactly like it did before this existed.
+          ...(this.room.config.roomSpendCapUsd > 0 ||
+          this.room.config.memberSpendCapUsd > 0
+            ? { spend: costSummary(this.room) }
+            : {}),
         };
       }
 
@@ -263,6 +270,21 @@ export class RoomServer {
 
       case "get_task":
         return getTask(this.room, str(args, "task_id") as TaskId);
+
+      case "report_cost": {
+        const memberId = this.requireMember().id;
+        return reportCost(this.room, memberId, {
+          amountUsd: reqNum(args, "amount_usd"),
+          ...(typeof args["model"] === "string" ? { model: args["model"] } : {}),
+          ...(args["input_tokens"] !== undefined
+            ? { inputTokens: num(args, "input_tokens", 0) }
+            : {}),
+          ...(args["output_tokens"] !== undefined
+            ? { outputTokens: num(args, "output_tokens", 0) }
+            : {}),
+          ...(typeof args["note"] === "string" ? { note: args["note"] } : {}),
+        });
+      }
 
       default:
         throw new Error(`Unknown tool: ${name}`);
@@ -412,6 +434,17 @@ function num(args: Record<string, unknown>, key: string, fallback: number): numb
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+/** Like `str`, but for a required number: raw and unvalidated otherwise, so a
+ * caller like `reportCost` still gets to give its own message for a bad value
+ * rather than this silently falling back to something plausible-looking. */
+function reqNum(args: Record<string, unknown>, key: string): number {
+  const value = args[key];
+  if (typeof value === "number") return value;
+  throw Object.assign(new Error(`"${key}" is required and must be a number.`), {
+    code: "invalid",
+  });
+}
+
 function strArray(args: Record<string, unknown>, key: string): string[] {
   const value = args[key];
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
@@ -454,7 +487,7 @@ const TOOLS: ToolDefinition[] = [
   {
     name: "join",
     description:
-      "Join this room and get a session token. Call this first. Returns the room's shared brief, so this is also how you find out what the job is.",
+      "Join this room and get a session token. Call this first. Returns the room's shared brief, so this is also how you find out what the job is. If the room has a spend cap configured, also returns current totals against it.",
     inputSchema: {
       type: "object",
       properties: {
@@ -651,6 +684,22 @@ const TOOLS: ToolDefinition[] = [
         limit: { type: "number", description: "Default 100." },
         from: { type: "number", description: "Start from this sequence number." },
       },
+    },
+  },
+  {
+    name: "report_cost",
+    description:
+      "Tell the room what a model call cost, in USD. Atrium cannot see this on its own — it only knows what gets reported here. If this report crosses the room's or your own spend cap, it still lands (the money is already spent), but the room halts and refuses further actions from anyone until a human raises the cap or starts a new room.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        amount_usd: { type: "number", description: "Cost of the call, in USD. Must be zero or more." },
+        model: { type: "string" },
+        input_tokens: { type: "number" },
+        output_tokens: { type: "number" },
+        note: { type: "string" },
+      },
+      required: ["amount_usd"],
     },
   },
 ];

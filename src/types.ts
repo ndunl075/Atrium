@@ -209,6 +209,22 @@ export interface EventMap {
   "note.posted": { memberId: MemberId; text: string; taskId?: TaskId };
 
   "room.halted": { reason: string };
+
+  /**
+   * A member self-reporting what a model call cost. Atrium does not make the
+   * call itself, so this is the only way it learns about money spent — see
+   * ARCHITECTURE.md §6. A member that never appends one of these is never
+   * charged for anything, by construction.
+   */
+  "cost.reported": {
+    memberId: MemberId;
+    /** USD. Validated non-negative and finite before this is appended. */
+    amountUsd: number;
+    model?: string;
+    inputTokens?: number;
+    outputTokens?: number;
+    note?: string;
+  };
 }
 
 export type EventType = keyof EventMap;
@@ -255,6 +271,16 @@ export interface RoomConfig {
   actionBudget: number;
   /** Hard ceiling on the shared brief, measured in tokens. */
   contextTokenCeiling: number;
+
+  /**
+   * USD. Total of every member's self-reported spend before the room halts.
+   * `0` means no cap — a room that never sets one behaves exactly as it did
+   * before cost accounting existed. This is advisory in the strict sense:
+   * see ARCHITECTURE.md §6. Atrium can only total what gets reported to it.
+   */
+  roomSpendCapUsd: number;
+  /** USD, per member. Same "0 means no cap" rule as `roomSpendCapUsd`. */
+  memberSpendCapUsd: number;
 }
 
 export const DEFAULT_ROOM_CONFIG: Omit<RoomConfig, "id" | "name" | "createdAt"> =
@@ -265,4 +291,6 @@ export const DEFAULT_ROOM_CONFIG: Omit<RoomConfig, "id" | "name" | "createdAt"> 
     maxAttempts: 3,
     actionBudget: 1000,
     contextTokenCeiling: 8000,
+    roomSpendCapUsd: 0,
+    memberSpendCapUsd: 0,
   };
