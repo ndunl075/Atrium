@@ -6,6 +6,7 @@ import { PassThrough } from "node:stream";
 
 import { RoomServer, serveStdio } from "./mcp.js";
 import { Room } from "./room.js";
+import { pruneVersions } from "./snapshots.js";
 
 const created: Array<{ room: Room; dir: string }> = [];
 
@@ -259,6 +260,34 @@ describe("writing files", () => {
 
     const current = await call(server, "read_artifact", { path: "notes/draft.md" });
     expect(current.data.content).toBe("# Draft v2\n");
+  });
+
+  it("tells an agent a pruned version existed rather than reporting it as missing", async () => {
+    const room = tempRoom();
+    const server = new RoomServer(room);
+    await call(server, "join", { name: "scout", role: "worker" });
+
+    const first = await call(server, "write_artifact", {
+      path: "notes/draft.md",
+      content: "# Draft v1\n",
+    });
+    await call(server, "write_artifact", {
+      path: "notes/draft.md",
+      content: "# Draft v2\n",
+    });
+    pruneVersions(room, { retain: 1 });
+
+    const { data } = await call(server, "read_artifact", {
+      path: "notes/draft.md",
+      seq: first.data.seq,
+    });
+
+    // exists: false would tell the agent this write never happened, and an
+    // agent told that has no reason to look at the history or ask again.
+    expect(data.exists).toBe(true);
+    expect(data.pruned).toBe(true);
+    expect(data.content).toBeUndefined();
+    expect(data.note).toMatch(/no longer retained/);
   });
 
   it("refuses a path another member is holding, and says who", async () => {

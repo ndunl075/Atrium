@@ -19,6 +19,7 @@ import {
   cmdInit,
   cmdInvite,
   cmdLog,
+  cmdPrune,
   cmdOpen,
   cmdReplay,
   cmdSearch,
@@ -557,6 +558,71 @@ describe("gc", () => {
     expect(code).toBe(0);
     expect(s.outLines.join("\n")).toMatch(/Would remove 1 unreferenced object/);
     expect(loadBlob(room, orphanHash)).toBeDefined();
+  });
+});
+
+describe("prune", () => {
+  function roomWithVersions() {
+    const { dir, room } = tempRoom();
+    const a = room.join({ name: "a", role: "worker" }).member;
+    acquireLease(room, a.id, "draft.md");
+    const v1 = writeArtifact(room, a.id, "draft.md", "one");
+    writeArtifact(room, a.id, "draft.md", "two");
+    writeArtifact(room, a.id, "draft.md", "three");
+    return { dir, room, v1 };
+  }
+
+  it("refuses to guess when the room has no retention policy set", () => {
+    const { dir } = roomWithVersions();
+
+    const s = sink();
+    const code = cmdPrune([dir], s);
+
+    // Discarding history on a default of somebody's choosing would be the
+    // wrong kind of helpful.
+    expect(code).not.toBe(0);
+    expect(s.errLines.join("\n")).toMatch(/retainVersionsPerPath/);
+  });
+
+  it("applies --keep and reports what went", () => {
+    const { dir, room, v1 } = roomWithVersions();
+
+    const s = sink();
+    const code = cmdPrune([dir, "--keep", "1"], s);
+
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/dropped 2 versions/);
+    expect(contentAt(room, "draft.md", v1.seq)).toBeUndefined();
+  });
+
+  it("uses the room's policy when one is set", () => {
+    const { dir, room } = roomWithVersions();
+    room.updateConfig({ retainVersionsPerPath: 2 });
+
+    const s = sink();
+    const code = cmdPrune([dir], s);
+
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/dropped 1 version\b/);
+  });
+
+  it("changes nothing on --dry-run and says so", () => {
+    const { dir, room, v1 } = roomWithVersions();
+
+    const s = sink();
+    const code = cmdPrune([dir, "--keep", "1", "--dry-run"], s);
+
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/would drop 2 versions/);
+    expect(s.outLines.join("\n")).toMatch(/Nothing was changed/);
+    expect(contentAt(room, "draft.md", v1.seq)?.toString("utf8")).toBe("one");
+  });
+
+  it("rejects a --keep that would leave nothing", () => {
+    const { dir } = roomWithVersions();
+    const s = sink();
+    expect(cmdPrune([dir, "--keep", "0"], s)).not.toBe(0);
+    expect(s.errLines.join("\n")).toMatch(/1 or more/);
   });
 });
 

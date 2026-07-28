@@ -58,11 +58,29 @@ remembers, not just that something was written.
 The cost of that is a store which only grows: every version the log refers to
 is kept, because being able to read it back later is the entire point. Plan
 for a long-lived room's `.atrium/` to be roughly the sum of every distinct
-version it has ever written. `atrium gc` reclaims what is genuinely garbage —
-bytes stored by a write that died before recording its event, and temporary
-files left by one that died before the rename — but it will not, and cannot,
-shrink history itself. Discarding history is the only thing that would, and
-that is a decision for whoever owns the room, not for a cleanup command.
+version it has ever written.
+
+Two commands act on that, and they are deliberately different in kind.
+
+`atrium gc` is safe and reclaims only what is genuinely garbage: bytes stored
+by a write that died before recording its event, and temporary files left by
+one that died before the rename. It never touches anything the log points at,
+so it cannot lose you anything.
+
+`atrium prune` discards history, and is the only thing in Atrium that does. It
+drops the content of all but the most recent N versions of each artifact,
+where N is the room's `retainVersionsPerPath` (`0`, keep everything, by
+default) or `--keep` for one run. Nothing prunes automatically even once the
+setting is there — you run the command, so the decision stays a person's.
+Start with `--dry-run`.
+
+What a prune removes is bytes, not record. Every version stays in the log and
+keeps listing in `atrium history`; what changes is that its content can no
+longer be read back. Everything that reads history knows the difference
+between "this path did not exist then" and "it did, and its content is gone",
+and says which — `atrium diff` refuses to diff against a pruned version rather
+than showing it as an empty file, and an agent reading one over MCP is told
+the write happened and the bytes are gone, not that the file never existed.
 
 ## Getting a room going
 

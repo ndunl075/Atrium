@@ -224,6 +224,9 @@ function describeEvent(
     case "artifact.deleted":
       return `${actorName(event.data.memberId)} deleted ${event.data.path}.`;
 
+    case "artifact.pruned":
+      return `Dropped the content of ${event.data.seqs.length} old version${event.data.seqs.length === 1 ? "" : "s"} of ${event.data.path}, keeping the most recent ${event.data.retained} (${event.data.bytesReclaimed} bytes reclaimed).`;
+
     case "lease.acquired":
       return `${actorName(event.data.memberId)} acquired a lease on ${event.data.path}.`;
 

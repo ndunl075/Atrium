@@ -36,6 +36,7 @@ import {
   getTask,
   listTasks,
   listVersions,
+  pruneVersions,
   releaseTask,
   restartTask,
   reviewTask,
@@ -910,6 +911,100 @@ export function cmdGc(argv: string[], sink: Sink): number {
 }
 
 // ---------------------------------------------------------------------------
+// prune
+// ---------------------------------------------------------------------------
+
+const PRUNE_HELP = `Usage: atrium prune [dir] [--keep N] [--dry-run]
+
+Drops the content of all but the most recent N versions of each artifact,
+where N is the room's retainVersionsPerPath (or --keep for this run).
+
+This is the one thing in Atrium that discards history, and it only ever
+happens because you ran it. What goes is bytes, not record: every version
+stays in the log and keeps showing up in "atrium history", and reading one
+whose content has gone says so rather than pretending the write never
+happened. It cannot be undone.
+
+Content is shared between versions holding identical bytes, so a version old
+enough to drop keeps its content anyway if anything still being kept points at
+the same bytes. Those are not reported as dropped, because they are still
+readable.
+
+Start with --dry-run.
+
+Options:
+  --keep <n>   versions per path to keep, overriding the room setting
+  --dry-run    report what would go, and touch nothing
+  --json       print machine-readable JSON instead
+  --help, -h   show this help
+`;
+
+export function cmdPrune(argv: string[], sink: Sink): number {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: {
+      help: { type: "boolean", short: "h" },
+      json: { type: "boolean" },
+      "dry-run": { type: "boolean" },
+      keep: { type: "string" },
+    },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(PRUNE_HELP);
+    return 0;
+  }
+
+  let retain: number | undefined;
+  if (values.keep !== undefined) {
+    retain = Number(values.keep);
+    if (!Number.isInteger(retain) || retain < 1) {
+      sink.err("--keep must be a whole number of versions, 1 or more.");
+      return 2;
+    }
+  }
+
+  const dryRun = values["dry-run"] === true;
+  const room = openRoom(positionals[0] ?? process.cwd());
+  try {
+    if (retain === undefined && room.config.retainVersionsPerPath < 1) {
+      sink.err(
+        'This room keeps every version (retainVersionsPerPath is 0), so there is no policy to apply. ' +
+          'Pass --keep N to prune this once, or set retainVersionsPerPath in .atrium/room.json to make it the room\'s policy.',
+      );
+      return 2;
+    }
+
+    const result = pruneVersions(room, { retain, dryRun });
+
+    if (values.json) {
+      sink.out(JSON.stringify({ ...result, dryRun }, null, 2));
+      return 0;
+    }
+
+    if (result.droppedVersions === 0) {
+      sink.out(dim(`Nothing to prune; no path has more than ${result.retained} versions to spare.`));
+      return 0;
+    }
+
+    for (const plan of result.plans) {
+      sink.out(
+        `${plan.path}  ${dryRun ? "would drop" : "dropped"} ${plan.seqs.length} version${plan.seqs.length === 1 ? "" : "s"} ` +
+          `(${plan.seqs.map((s) => `#${s}`).join(", ")}), ${plan.bytesReclaimed} bytes`,
+      );
+    }
+    sink.out(
+      `${dryRun ? "Would reclaim" : "Reclaimed"} ${result.bytesReclaimed} bytes across ` +
+        `${result.droppedVersions} version${result.droppedVersions === 1 ? "" : "s"}, keeping the most recent ${result.retained} of each path.`,
+    );
+    if (dryRun) sink.out(dim("Nothing was changed. Re-run without --dry-run to apply."));
+    return 0;
+  } finally {
+    room.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // task — the human's hands on the board
 // ---------------------------------------------------------------------------
 //
@@ -1359,6 +1454,7 @@ Commands:
   history <path> [dir]  every version an artifact has had
   diff <path> [dir]     a unified diff between two versions of an artifact
   gc [dir]              remove stored content no log entry points at
+  prune [dir]           drop the content of old artifact versions (destructive)
   serve [dir]           serve the room to an MCP client over stdin/stdout
   task <subcommand>     create, inspect, and administer tasks — see "atrium task --help"
 
@@ -1418,6 +1514,8 @@ function dispatch(argv: string[], sink: Sink): number {
       return cmdDiff(rest, sink);
     case "gc":
       return cmdGc(rest, sink);
+    case "prune":
+      return cmdPrune(rest, sink);
     case "task":
       return cmdTask(rest, sink);
     default:

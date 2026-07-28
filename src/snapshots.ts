@@ -200,23 +200,201 @@ export function listVersions(room: Room, path: string): ArtifactVersion[] {
 }
 
 /**
- * The content a path held right after log position `seq` — the same "as of
- * this point in the log" model `atrium replay` uses, applied to bytes
- * instead of the board. `undefined` means the path did not exist at that
- * point, whether because it had never been written yet or because the most
- * recent thing to happen to it by then was a delete.
+ * What reading a past version can find, as three outcomes rather than two.
  *
- * Passing the exact `seq` of one of `listVersions`' entries reads that
- * version directly, which is what makes deleted history still reachable:
- * the version recorded right before a delete reads back fine, even though
- * the path does not exist right now.
+ * The third one is the reason this type exists. Once a retention sweep can
+ * drop content (see {@link pruneVersions}), "no bytes here" stops meaning one
+ * thing: a path may have not existed at that point, or it may have existed and
+ * had its content discarded since. Collapsing those into a single `undefined`
+ * makes every caller assert the first when the second is true — reporting a
+ * file as never having existed, or diffing a real version against emptiness.
+ * Keeping them apart is what lets each caller say what it actually knows.
  */
-export function contentAt(room: Room, path: string, seq: number): Buffer | undefined {
+export type ArtifactContent =
+  | { state: "present"; bytes: Buffer }
+  /** Never written by that point, or the last thing to happen was a delete. */
+  | { state: "absent" }
+  /**
+   * Written, still listed in the log, but its bytes are not in the store.
+   * A retention sweep is the ordinary reason; the log's `artifact.pruned`
+   * events say which sweep and when.
+   */
+  | { state: "pruned"; hash: string; bytes: number };
+
+/**
+ * The content a path held right after log position `seq` — the same "as of
+ * this point in the log" model `atrium replay` uses, applied to bytes instead
+ * of the board.
+ *
+ * Passing the exact `seq` of one of `listVersions`' entries reads that version
+ * directly, which is what makes deleted history still reachable: the version
+ * recorded right before a delete reads back fine, even though the path does
+ * not exist right now.
+ */
+export function contentStateAt(room: Room, path: string, seq: number): ArtifactContent {
   const relPath = normalizePath(room, path);
   const versions = listVersions(room, relPath).filter((v) => v.seq <= seq);
   const last = versions[versions.length - 1];
-  if (!last || last.kind === "deleted") return undefined;
-  return loadBlob(room, last.hash!);
+  if (!last || last.kind === "deleted") return { state: "absent" };
+
+  const bytes = loadBlob(room, last.hash!);
+  if (bytes === undefined) {
+    return { state: "pruned", hash: last.hash!, bytes: last.bytes ?? 0 };
+  }
+  return { state: "present", bytes };
+}
+
+/**
+ * The bytes of a past version, or `undefined` if there are none to hand back.
+ *
+ * This is the convenience form, and it cannot tell "the path did not exist"
+ * from "it did, and its content has since been pruned" — both come back
+ * `undefined`. Anything that reports what it found to a person or an agent
+ * wants {@link contentStateAt} instead, so it does not claim the first when
+ * the second is true.
+ */
+export function contentAt(room: Room, path: string, seq: number): Buffer | undefined {
+  const found = contentStateAt(room, path, seq);
+  return found.state === "present" ? found.bytes : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Retention
+// ---------------------------------------------------------------------------
+
+export interface PrunePlan {
+  path: string;
+  /** Versions whose content would be, or was, dropped. Oldest first. */
+  seqs: number[];
+  bytesReclaimed: number;
+}
+
+export interface PruneResult {
+  /** Versions kept per path, which is what the sweep ran with. */
+  retained: number;
+  plans: PrunePlan[];
+  /** Versions whose content was dropped, across every path. */
+  droppedVersions: number;
+  bytesReclaimed: number;
+}
+
+export interface PruneOptions {
+  /**
+   * Versions of each path to keep. Defaults to the room's
+   * `retainVersionsPerPath`. Must be 1 or more: a path always keeps its most
+   * recent version, because that is the file itself.
+   */
+  retain?: number;
+  /** Work out what would go, and touch nothing. */
+  dryRun?: boolean;
+}
+
+/**
+ * Drops the content of all but the most recent `retain` versions of each path.
+ *
+ * This is the only thing in Atrium that discards history, and it is never
+ * automatic — `atrium prune` runs it, a person runs `atrium prune`. What it
+ * removes is bytes, not record: every version stays in the log and keeps
+ * listing in `atrium history`, and reading one whose content is gone reports
+ * that plainly rather than pretending the version never happened.
+ *
+ * Two things make this less simple than deleting the oldest blobs.
+ *
+ * The store is content-addressed, so one blob can back several versions —
+ * the same content rewritten, or two paths holding identical bytes. A blob is
+ * therefore only removed when *no* retained version anywhere still refers to
+ * it, which is why the retained set is collected across all paths before
+ * anything is deleted. Getting this wrong would delete content still being
+ * pointed at from a version that was supposed to be kept.
+ *
+ * And a version whose blob survives that check is not reported as pruned,
+ * because its content is still readable. The result describes what actually
+ * became unavailable, which is the only thing worth recording.
+ */
+export function pruneVersions(room: Room, options: PruneOptions = {}): PruneResult {
+  const retain = options.retain ?? room.config.retainVersionsPerPath;
+  if (!Number.isInteger(retain) || retain < 1) {
+    throw new InvalidError(
+      `Retention must be a whole number of versions, 1 or more; got ${retain}. ` +
+        `Set retainVersionsPerPath in the room config, or pass --keep.`,
+      { retain },
+    );
+  }
+
+  // Group every recorded write by path, oldest first.
+  const byPath = new Map<string, ArtifactVersion[]>();
+  for (const event of room.log.read({ types: ["artifact.written"] })) {
+    if (event.type !== "artifact.written") continue;
+    const list = byPath.get(event.data.path) ?? [];
+    list.push({
+      seq: event.seq,
+      ts: event.ts,
+      path: event.data.path,
+      author: event.data.memberId,
+      kind: "written",
+      bytes: event.data.bytes,
+      hash: event.data.hash,
+    });
+    byPath.set(event.data.path, list);
+  }
+
+  // Everything the policy says to keep, gathered across every path before a
+  // single blob is looked at. A hash in here is live no matter how old the
+  // version referring to it happens to be somewhere else.
+  const retainedHashes = new Set<string>();
+  const candidates: ArtifactVersion[] = [];
+  for (const versions of byPath.values()) {
+    const cut = Math.max(0, versions.length - retain);
+    for (const version of versions.slice(cut)) retainedHashes.add(version.hash!);
+    candidates.push(...versions.slice(0, cut));
+  }
+
+  const plans = new Map<string, PrunePlan>();
+  const removed = new Set<string>();
+
+  for (const version of candidates) {
+    // Still pointed at by something being kept, so its content stays readable
+    // and there is nothing to report for this version.
+    if (retainedHashes.has(version.hash!)) continue;
+    // Already handled: several old versions can share one blob too.
+    if (removed.has(version.hash!)) continue;
+
+    const blob = blobPath(room, version.hash!);
+    if (!existsSync(blob)) continue;
+
+    removed.add(version.hash!);
+    const size = statSync(blob).size;
+    if (!options.dryRun) rmSync(blob);
+
+    const plan = plans.get(version.path) ?? { path: version.path, seqs: [], bytesReclaimed: 0 };
+    plan.seqs.push(version.seq);
+    plan.bytesReclaimed += size;
+    plans.set(version.path, plan);
+  }
+
+  const result: PruneResult = {
+    retained: retain,
+    plans: [...plans.values()],
+    droppedVersions: [...plans.values()].reduce((total, plan) => total + plan.seqs.length, 0),
+    bytesReclaimed: [...plans.values()].reduce((total, plan) => total + plan.bytesReclaimed, 0),
+  };
+
+  // Recorded as system events, and deliberately without assertUsable: a room
+  // that has spent its action budget is exactly one you might need to reclaim
+  // space on, and refusing to record a discard that already happened would be
+  // worse than the budget going one over.
+  if (!options.dryRun) {
+    for (const plan of result.plans) {
+      room.log.append("system", "artifact.pruned", {
+        path: plan.path,
+        seqs: plan.seqs,
+        bytesReclaimed: plan.bytesReclaimed,
+        retained: retain,
+      });
+    }
+  }
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -252,8 +430,15 @@ export interface DiffResult {
   /** True when either side is not text, so `patch` is a one-line note rather
    * than an attempted line diff. */
   binary: boolean;
-  /** Unified diff text, or a "Binary files ... differ" note, or empty when
-   * `identical` is true. */
+  /**
+   * True when either side's content has been pruned, so there is nothing to
+   * compare. `patch` says which side, and `identical` is false: the versions
+   * are not known to match, and claiming they do would be worse than saying
+   * the comparison cannot be made.
+   */
+  pruned: boolean;
+  /** Unified diff text, a "Binary files ... differ" note, a note that content
+   * is no longer retained, or empty when `identical` is true. */
   patch: string;
 }
 
@@ -279,13 +464,47 @@ export function diffArtifact(room: Room, path: string, fromSeq: number, toSeq: n
     });
   }
 
-  const fromBytes = contentAt(room, relPath, fromSeq);
-  const toBytes = contentAt(room, relPath, toSeq);
+  const from = contentStateAt(room, relPath, fromSeq);
+  const to = contentStateAt(room, relPath, toSeq);
   const fromLabel = `${relPath}@${fromSeq}`;
   const toLabel = `${relPath}@${toSeq}`;
 
+  // Checked before anything else, because with a side's bytes gone there is
+  // no comparison to make. The tempting shortcuts are both wrong: treating a
+  // pruned side as empty invents a patch that deletes a file nobody deleted,
+  // and treating two pruned sides as equal reports versions as identical on
+  // the strength of knowing nothing about either.
+  if (from.state === "pruned" || to.state === "pruned") {
+    const which =
+      from.state === "pruned" && to.state === "pruned"
+        ? `${fromLabel} and ${toLabel}`
+        : from.state === "pruned"
+          ? fromLabel
+          : toLabel;
+    return {
+      path: relPath,
+      fromSeq,
+      toSeq,
+      identical: false,
+      binary: false,
+      pruned: true,
+      patch: `Cannot diff: the content of ${which} is no longer retained.\n`,
+    };
+  }
+
+  const fromBytes = from.state === "present" ? from.bytes : undefined;
+  const toBytes = to.state === "present" ? to.bytes : undefined;
+
   if (bytesEqual(fromBytes, toBytes)) {
-    return { path: relPath, fromSeq, toSeq, identical: true, binary: false, patch: "" };
+    return {
+      path: relPath,
+      fromSeq,
+      toSeq,
+      identical: true,
+      binary: false,
+      pruned: false,
+      patch: "",
+    };
   }
 
   const binary =
@@ -299,6 +518,7 @@ export function diffArtifact(room: Room, path: string, fromSeq: number, toSeq: n
       toSeq,
       identical: false,
       binary: true,
+      pruned: false,
       patch: `Binary files ${fromLabel} and ${toLabel} differ\n`,
     };
   }
@@ -307,7 +527,7 @@ export function diffArtifact(room: Room, path: string, fromSeq: number, toSeq: n
   const bLines = splitLines(toBytes ? toBytes.toString("utf8") : "");
   const patch = unifiedDiff(aLines, bLines, fromLabel, toLabel);
 
-  return { path: relPath, fromSeq, toSeq, identical: false, binary: false, patch };
+  return { path: relPath, fromSeq, toSeq, identical: false, binary: false, pruned: false, patch };
 }
 
 function bytesEqual(a: Buffer | undefined, b: Buffer | undefined): boolean {
