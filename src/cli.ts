@@ -31,6 +31,7 @@ import {
   listTasks,
   searchArtifacts,
 } from "./index.js";
+import { serveStdio } from "./mcp.js";
 import type { MemberRole, Task, TaskState } from "./index.js";
 
 export interface Sink {
@@ -628,6 +629,7 @@ Commands:
   replay <seq> [dir]    the board as it looked at that point in the log
   context [dir]         the shared brief and its token total against the ceiling
   search <query> [dir]  full-text search over the room's artifacts
+  serve [dir]           serve the room to an MCP client over stdin/stdout
 
 Run "atrium <command> --help" for details on any command.
 
@@ -710,12 +712,77 @@ export function runCli(argv: string[], sink: Sink): number {
   }
 }
 
+const SERVE_HELP = `atrium serve — serve a room to an MCP client over stdin/stdout
+
+Usage: atrium serve [dir] [options]
+
+Point an MCP client at this. In most clients that means a config entry
+along the lines of:
+
+  { "command": "atrium", "args": ["serve", "/path/to/room"] }
+
+The agent calls the "join" tool first, which hands back a session token
+and the room's shared brief.
+
+Options:
+  --token <token>  rejoin as an existing member instead of joining afresh
+  --help, -h       show this help
+
+Nothing but protocol messages is written to stdout, so this is not a
+command to run by hand expecting output.
+`;
+
+/**
+ * Kept apart from the other commands because it is a different shape: it runs
+ * until the client closes the connection rather than printing something and
+ * returning an exit code, and its stdout belongs to the protocol.
+ */
+export async function cmdServe(argv: string[], sink: Sink): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: {
+      help: { type: "boolean", short: "h" },
+      token: { type: "string" },
+    },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(SERVE_HELP);
+    return 0;
+  }
+
+  const room = openRoom(positionals[0] ?? process.cwd());
+  try {
+    // Announced on stderr: stdout is the protocol stream and must stay clean.
+    process.stderr.write(`atrium: serving ${room.config.name} (${room.dir})\n`);
+    await serveStdio(room, values.token ? { token: values.token } : {});
+    return 0;
+  } finally {
+    room.close();
+  }
+}
+
 function main(): void {
   const sink: Sink = {
     out: (line) => process.stdout.write(line + "\n"),
     err: (line) => process.stderr.write(line + "\n"),
   };
-  process.exit(runCli(process.argv.slice(2), sink));
+
+  const argv = process.argv.slice(2);
+
+  // serve is the one command that does not finish on its own, so it gets its
+  // own path rather than making every other command's handler async.
+  if (argv[0] === "serve") {
+    cmdServe(argv.slice(1), sink)
+      .then((code) => process.exit(code))
+      .catch((err: unknown) => {
+        sink.err(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      });
+    return;
+  }
+
+  process.exit(runCli(argv, sink));
 }
 
 // Importing this module (from a test, say) must never launch a command —

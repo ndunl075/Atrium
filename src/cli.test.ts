@@ -14,6 +14,7 @@ import {
   cmdOpen,
   cmdReplay,
   cmdSearch,
+  cmdServe,
   runCli,
   type Sink,
 } from "./cli.js";
@@ -430,5 +431,22 @@ describe("help and usage", () => {
     const code = runCli(["frobnicate"], s);
     expect(code).not.toBe(0);
     expect(s.errLines.join("\n")).toMatch(/Unknown command/);
+  });
+});
+
+describe("serve", () => {
+  it("explains itself without starting a server", async () => {
+    const s = sink();
+    const code = await cmdServe(["--help"], s);
+
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/stdin\/stdout/);
+    // Worth stating in the help: this command's stdout belongs to the protocol.
+    expect(s.outLines.join("\n")).toMatch(/stdout/);
+  });
+
+  it("refuses a directory that is not a room", async () => {
+    const dir = tempDir();
+    await expect(cmdServe([dir], sink())).rejects.toThrow(/not an Atrium room/);
   });
 });
