@@ -124,7 +124,10 @@ describe("submitTask", () => {
     it("accepts automatically when the command exits 0", async () => {
       const room = tempRoom();
       const worker = room.join({ name: "w1", role: "worker" }).member;
-      const taskId = createTask(room, { kind: "command", command: "true" });
+      // `exit 0` rather than `true`: a shell builtin everywhere, where `true`
+      // is a coreutils binary that only happens to be on PATH on Windows when
+      // something like Git for Windows has put it there.
+      const taskId = createTask(room, { kind: "command", command: "exit 0" });
       claim(room, taskId, worker.id);
 
       const task = await submitTask(room, worker.id, taskId, { summary: "done" });
@@ -142,7 +145,11 @@ describe("submitTask", () => {
       const worker = room.join({ name: "w1", role: "worker" }).member;
       const taskId = createTask(room, {
         kind: "command",
-        command: "echo something went wrong; exit 1",
+        // `&&` rather than `;`: this runs through whatever shell the host
+        // has, and cmd.exe treats `;` as an argument separator rather than a
+        // command one, so the POSIX spelling passes on Linux and silently
+        // exits 0 on Windows.
+        command: "echo something went wrong && exit 1",
       });
       claim(room, taskId, worker.id);
 

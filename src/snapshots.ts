@@ -23,7 +23,16 @@
  * state of the path is "here" or "gone".
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 
 import { InvalidError } from "./errors.js";
@@ -61,6 +70,79 @@ export function storeBlob(room: Room, hash: string, bytes: Uint8Array): void {
 export function loadBlob(room: Room, hash: string): Buffer | undefined {
   const path = blobPath(room, hash);
   return existsSync(path) ? readFileSync(path) : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Reclaiming space
+// ---------------------------------------------------------------------------
+
+export interface GcResult {
+  /** Blobs still referenced by the log, and so left alone. */
+  kept: number;
+  /** Files removed from the object store. */
+  removed: number;
+  /** Bytes those removed files were taking up. */
+  bytesReclaimed: number;
+  /** Paths removed, relative to the object store. Useful for a dry run. */
+  paths: string[];
+}
+
+/**
+ * Deletes anything in the object store the log does not point at.
+ *
+ * Be clear about what this does and does not bound. Every `artifact.written`
+ * event names a hash, events are never removed, and history is the reason the
+ * store exists — so a blob that some version of some path still refers to is
+ * live forever by design, and no amount of collecting will shrink it. A room
+ * that keeps working keeps growing, and the only way to change that is to
+ * throw away history, which is a different decision than this one.
+ *
+ * What this reclaims is the store's genuine garbage: a `storeBlob` that wrote
+ * its temporary file and died before the rename, and — the costlier case — a
+ * `writeArtifact` that stored bytes and died before appending the event that
+ * would have referred to them. Neither is reachable, neither is ever
+ * overwritten, and without a sweep both sit there for the life of the room.
+ *
+ * Reachability is read from the log itself rather than from any index, so
+ * this is safe to run at any time: the worst a concurrent write can do is
+ * store a blob after the reference set was read, which leaves that blob for
+ * the next sweep rather than deleting a live one.
+ */
+export function gcBlobs(room: Room, options: { dryRun?: boolean } = {}): GcResult {
+  const referenced = new Set<string>();
+  for (const event of room.log.read({ types: ["artifact.written"] })) {
+    if (event.type === "artifact.written") referenced.add(event.data.hash);
+  }
+
+  const objects = join(room.paths.atrium, OBJECTS_DIR);
+  const result: GcResult = { kept: 0, removed: 0, bytesReclaimed: 0, paths: [] };
+  if (!existsSync(objects)) return result;
+
+  for (const shard of readdirSync(objects, { withFileTypes: true })) {
+    if (!shard.isDirectory()) continue;
+    const shardDir = join(objects, shard.name);
+
+    for (const entry of readdirSync(shardDir, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+
+      // The hash is the shard name plus the file name, which is exactly how
+      // blobPath split it. A leftover temporary file carries a `.tmp-` suffix
+      // and so reassembles into a hash matching nothing, which is the answer
+      // we want anyway.
+      if (referenced.has(shard.name + entry.name)) {
+        result.kept++;
+        continue;
+      }
+
+      const path = join(shardDir, entry.name);
+      result.removed++;
+      result.bytesReclaimed += statSync(path).size;
+      result.paths.push(`${shard.name}/${entry.name}`);
+      if (!options.dryRun) rmSync(path);
+    }
+  }
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -182,9 +264,10 @@ export interface DiffResult {
  * project's stated dependency budget is zero, so the diff had to be written
  * rather than pulled in, and an O(n*m) table is the straightforward version
  * of that. Rooms are small working directories, not monorepos, so this is
- * expected to stay fast enough in practice; if a room ever grows artifacts
- * large enough for that to matter, that is the point to reach for something
- * smarter, not before.
+ * expected to stay fast enough in practice. It is not left to trust, though:
+ * `lcsOps` trims the common head and tail before building any table and
+ * refuses to build one past a fixed cell budget, so an artifact large enough
+ * to matter degrades to a coarser patch instead of exhausting memory.
  */
 export function diffArtifact(room: Room, path: string, fromSeq: number, toSeq: number): DiffResult {
   const relPath = normalizePath(room, path);
@@ -232,29 +315,108 @@ function bytesEqual(a: Buffer | undefined, b: Buffer | undefined): boolean {
   return a.equals(b);
 }
 
-function splitLines(text: string): string[] {
-  if (text === "") return [];
-  const lines = text.split("\n");
-  if (lines[lines.length - 1] === "") lines.pop();
-  return lines;
+/**
+ * One line of a file, plus whether it is a final line with no newline after
+ * it. That flag is part of the line's identity, not decoration: a file ending
+ * `"...done"` and one ending `"...done\n"` split into the same list of
+ * strings, so without it the two compare equal and a real difference in bytes
+ * comes back as an empty patch.
+ */
+interface DiffLine {
+  text: string;
+  /** True only for the last line of a file that does not end in a newline. */
+  noEol: boolean;
 }
 
-type LineOp = { type: "eq" | "del" | "add"; line: string };
+/** How git marks the same thing, and what `git apply` expects to read. */
+const NO_EOL_MARKER = "\\ No newline at end of file";
+
+function splitLines(text: string): DiffLine[] {
+  if (text === "") return [];
+  const parts = text.split("\n");
+  // A trailing newline leaves an empty final element, which is a terminator
+  // rather than a line. Its absence is what has to be remembered.
+  const endsWithNewline = parts[parts.length - 1] === "";
+  if (endsWithNewline) parts.pop();
+  return parts.map((line, index) => ({
+    text: line,
+    noEol: !endsWithNewline && index === parts.length - 1,
+  }));
+}
+
+function sameLine(a: DiffLine, b: DiffLine): boolean {
+  return a.text === b.text && a.noEol === b.noEol;
+}
+
+type LineOp = { type: "eq" | "del" | "add"; line: DiffLine };
+
+/**
+ * Cells the LCS table is allowed to occupy. At four bytes a cell this caps it
+ * at about 32 MB, which is far past any artifact a room realistically holds
+ * and small enough that a pathological one degrades instead of trying to
+ * allocate gigabytes.
+ */
+const MAX_LCS_CELLS = 8_000_000;
 
 /** Longest-common-subsequence line diff, backtracked into a flat list of
  * equal/delete/add operations in document order. */
-function lcsOps(a: string[], b: string[]): LineOp[] {
+function lcsOps(a: DiffLine[], b: DiffLine[]): LineOp[] {
+  // An edit to a large file almost always leaves its head and tail alone, and
+  // matching those off costs O(n) against the O(n*m) of putting them through
+  // the table. Doing it first is both the ordinary speed-up and what keeps
+  // realistic edits under the cell budget below.
+  let prefix = 0;
+  while (prefix < a.length && prefix < b.length && sameLine(a[prefix]!, b[prefix]!)) {
+    prefix++;
+  }
+
+  let suffix = 0;
+  while (
+    suffix < a.length - prefix &&
+    suffix < b.length - prefix &&
+    sameLine(a[a.length - 1 - suffix]!, b[b.length - 1 - suffix]!)
+  ) {
+    suffix++;
+  }
+
+  const ops: LineOp[] = [];
+  for (let i = 0; i < prefix; i++) ops.push({ type: "eq", line: a[i]! });
+  ops.push(...middleOps(a.slice(prefix, a.length - suffix), b.slice(prefix, b.length - suffix)));
+  for (let i = a.length - suffix; i < a.length; i++) ops.push({ type: "eq", line: a[i]! });
+  return ops;
+}
+
+/** The differing region between the common head and tail, which is the only
+ * part the table is ever built over. */
+function middleOps(a: DiffLine[], b: DiffLine[]): LineOp[] {
   const n = a.length;
   const m = b.length;
 
-  // dp[i][j] = length of the LCS of a[i..] and b[j..]. Every index used below
-  // is within the [0, n] / [0, m] bounds the loops establish, so the
-  // non-null assertions are just working around noUncheckedIndexedAccess,
-  // not papering over a real possibility of a hole.
-  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  // Two reasons to skip the table, with the same answer. Either one side is
+  // empty, so there is no common subsequence to find; or the table would be
+  // over budget, in which case replacing the region wholesale is still a
+  // correct unified diff, only a coarser one than the minimal edit. A blunt
+  // patch beats both refusing to answer and allocating without a ceiling.
+  if (n === 0 || m === 0 || (n + 1) * (m + 1) > MAX_LCS_CELLS) {
+    return [
+      ...a.map((line): LineOp => ({ type: "del", line })),
+      ...b.map((line): LineOp => ({ type: "add", line })),
+    ];
+  }
+
+  // dp[i * width + j] = length of the LCS of a[i..] and b[j..], held flat in
+  // one typed array rather than an array of arrays: same O(n*m) cells, but
+  // four bytes each instead of a boxed number plus per-row object overhead.
+  // Every index used below is inside the [0, n] / [0, m] bounds the loops
+  // establish, so the non-null assertions are working around
+  // noUncheckedIndexedAccess rather than papering over a real hole.
+  const width = m + 1;
+  const dp = new Int32Array((n + 1) * width);
   for (let i = n - 1; i >= 0; i--) {
     for (let j = m - 1; j >= 0; j--) {
-      dp[i]![j] = a[i] === b[j] ? dp[i + 1]![j + 1]! + 1 : Math.max(dp[i + 1]![j]!, dp[i]![j + 1]!);
+      dp[i * width + j] = sameLine(a[i]!, b[j]!)
+        ? dp[(i + 1) * width + j + 1]! + 1
+        : Math.max(dp[(i + 1) * width + j]!, dp[i * width + j + 1]!);
     }
   }
 
@@ -262,11 +424,11 @@ function lcsOps(a: string[], b: string[]): LineOp[] {
   let i = 0;
   let j = 0;
   while (i < n && j < m) {
-    if (a[i] === b[j]) {
+    if (sameLine(a[i]!, b[j]!)) {
       ops.push({ type: "eq", line: a[i]! });
       i++;
       j++;
-    } else if (dp[i + 1]![j]! >= dp[i]![j + 1]!) {
+    } else if (dp[(i + 1) * width + j]! >= dp[i * width + j + 1]!) {
       ops.push({ type: "del", line: a[i]! });
       i++;
     } else {
@@ -291,7 +453,7 @@ const CONTEXT_LINES = 3;
  * or more `@@ -a,b +c,d @@` hunks with up to `CONTEXT_LINES` of unchanged
  * lines on either side of each change, merging hunks that would otherwise
  * overlap. */
-function unifiedDiff(a: string[], b: string[], aLabel: string, bLabel: string): string {
+function unifiedDiff(a: DiffLine[], b: DiffLine[], aLabel: string, bLabel: string): string {
   const ops = lcsOps(a, b);
   if (ops.every((op) => op.type === "eq")) return "";
 
@@ -376,7 +538,10 @@ function unifiedDiff(a: string[], b: string[], aLabel: string, bLabel: string): 
     for (const idx of hunk) {
       const op = ops[idx]!;
       const prefix = op.type === "eq" ? " " : op.type === "del" ? "-" : "+";
-      lines.push(`${prefix}${op.line}`);
+      lines.push(`${prefix}${op.line.text}`);
+      // Sits outside the hunk's line counts, the same as in git's output: it
+      // annotates the line above rather than being a line of either file.
+      if (op.line.noEol) lines.push(NO_EOL_MARKER);
     }
   }
 

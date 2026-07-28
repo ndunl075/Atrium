@@ -8,10 +8,13 @@ import { claimTask, createTask } from "./board.js";
 import { reviewTask, submitTask } from "./acceptance.js";
 import { acquireLease } from "./leases.js";
 import { writeArtifact } from "./artifacts.js";
+import { contentAt, loadBlob, storeBlob } from "./snapshots.js";
+import { sha256 } from "./util.js";
 import {
   cmdBoard,
   cmdContext,
   cmdDiff,
+  cmdGc,
   cmdHistory,
   cmdInit,
   cmdInvite,
@@ -505,6 +508,55 @@ describe("diff", () => {
     const code = cmdDiff([], s);
     expect(code).not.toBe(0);
     expect(s.errLines.join("\n")).toMatch(/path/);
+  });
+});
+
+describe("gc", () => {
+  it("says there is nothing to reclaim when every object is referenced", () => {
+    const { dir, room } = tempRoom();
+    const a = room.join({ name: "a", role: "worker" }).member;
+    acquireLease(room, a.id, "draft.md");
+    writeArtifact(room, a.id, "draft.md", "one");
+    writeArtifact(room, a.id, "draft.md", "two");
+
+    const s = sink();
+    const code = cmdGc([dir], s);
+
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/Nothing to reclaim/);
+  });
+
+  it("reports what it removed, and leaves history readable", () => {
+    const { dir, room } = tempRoom();
+    const a = room.join({ name: "a", role: "worker" }).member;
+    acquireLease(room, a.id, "draft.md");
+    const v1 = writeArtifact(room, a.id, "draft.md", "kept");
+    const orphan = Buffer.from("unreferenced", "utf8");
+    storeBlob(room, sha256(orphan), orphan);
+
+    const s = sink();
+    const code = cmdGc([dir], s);
+
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/Removed 1 unreferenced object/);
+    expect(contentAt(room, "draft.md", v1.seq)?.toString("utf8")).toBe("kept");
+  });
+
+  it("removes nothing on --dry-run", () => {
+    const { dir, room } = tempRoom();
+    const a = room.join({ name: "a", role: "worker" }).member;
+    acquireLease(room, a.id, "draft.md");
+    writeArtifact(room, a.id, "draft.md", "kept");
+    const orphan = Buffer.from("unreferenced", "utf8");
+    const orphanHash = sha256(orphan);
+    storeBlob(room, orphanHash, orphan);
+
+    const s = sink();
+    const code = cmdGc([dir, "--dry-run"], s);
+
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/Would remove 1 unreferenced object/);
+    expect(loadBlob(room, orphanHash)).toBeDefined();
   });
 });
 

@@ -119,10 +119,12 @@ export {
 export {
   storeBlob,
   loadBlob,
+  gcBlobs,
   listVersions,
   contentAt,
   isBinaryContent,
   diffArtifact,
   type ArtifactVersion,
   type DiffResult,
+  type GcResult,
 } from "./snapshots.js";
