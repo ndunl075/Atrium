@@ -86,6 +86,8 @@ A **Member** is any process holding a session token for a Room. Members are type
 
 Files in the Room's working directory. Real files on real disk, not abstractions. Any agent that can call `open()` can work with them. Artifacts are versioned through the event log rather than through a custom VCS. `[ASSUMPTION]` Git is deliberately not used internally at v1; a Room directory can itself live inside a git repo without Atrium knowing.
 
+Every write's content is retained, not just its hash. `artifact.written` records a sha256 of the bytes it wrote; the bytes themselves are kept in a content-addressed blob store under `.atrium/objects/<hash prefix>/<hash rest>`, keyed by that same hash. This is what makes replay mean something for artifacts specifically, not just for the board: `atrium history` lists every version a path has had, and `atrium diff` shows what changed between two of them, including a version from before the path was deleted. Content-addressing keeps it cheap — identical bytes are stored once no matter how many times they are written or under how many paths — and it is still not a VCS: there is no tree, no commit graph, no merge, just a flat store of blobs that the log's own sequence numbers give history to.
+
 ### 3.4 Tasks
 
 A work item on the board. States:
@@ -171,7 +173,9 @@ Tasks carry an attempt counter. `[ASSUMPTION]` Three rejections escalates to a h
 Tier 1 context has a hard token ceiling. `[OPEN]` What happens on overflow — reject the pin, evict oldest, or summarize? Summarization reintroduces exactly the lossiness this design exists to avoid, so lean toward rejecting the pin and making the human choose.
 
 **Cost runaway.**
-Per-Room and per-member spend caps, enforced at the adapter boundary. `[OPEN]` Atrium does not make the model calls, so it can only observe cost that adapters self-report. Enforcement is therefore advisory unless agents run behind a proxy. Unsolved.
+Per-Room and per-member spend caps exist now (`src/cost.ts`), built honestly around the constraint the rest of this section states: **Atrium does not make the model calls, so it can only total what an adapter self-reports.** A member calls `report_cost` (MCP) or the equivalent library function with a USD amount after each call it makes; Atrium folds those events into running per-member and per-room totals, the same way the board and roster are folded from the log. If a report crosses either cap, the room halts through the existing action-budget mechanism (`Room.assertUsable` / `room.halted`) — the report that crossed the cap still lands, because the money was already spent and the log must not lie about that, but every action after it is refused until a human raises the cap or starts over. `0`, or never setting the fields, means no cap, so a room that ignores this feature behaves exactly as it did before it existed.
+
+What remains genuinely unsolved, `[OPEN]`: a member that never calls `report_cost` is never charged, and nothing in this design can force it to. A misbehaving or just-unaware adapter can spend without limit and Atrium will show a total of $0 the entire time. This is not a bug to fix later; it is the actual ceiling on what an out-of-process observer can enforce. The only way past it is agents running behind a metering proxy that reports on their behalf, which is a deployment choice, not something this repo can guarantee. Advisory is the honest word for what this is.
 
 ---
 

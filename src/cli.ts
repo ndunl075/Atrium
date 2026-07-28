@@ -25,18 +25,22 @@ import {
   isAtriumError,
   InvalidError,
   Room,
+  costSummary,
   createTask,
   currentLease,
   describeHistory,
+  diffArtifact,
   foldTasks,
   getContext,
   getTask,
   listTasks,
+  listVersions,
   releaseTask,
   restartTask,
   reviewTask,
   searchArtifacts,
 } from "./index.js";
+import { serveHttp } from "./http.js";
 import { serveStdio } from "./mcp.js";
 import type { Acceptance, MemberId, MemberRole, Task, TaskState, Verdict } from "./index.js";
 
@@ -619,6 +623,225 @@ export function cmdSearch(argv: string[], sink: Sink): number {
 }
 
 // ---------------------------------------------------------------------------
+// cost
+// ---------------------------------------------------------------------------
+
+const COST_HELP = `Usage: atrium cost [dir]
+
+Per-member and room spend totals, folded from self-reported cost.reported
+events, against the room's caps. A cap of 0 means the room has not set one.
+
+This is advisory in the strict sense ARCHITECTURE.md §6 describes: Atrium
+did not make any model call itself, so a member that never calls
+report_cost is never charged, and there is no way to make it charged
+retroactively. It only shows what was reported.
+
+Options:
+  --json       print machine-readable JSON instead
+  --help, -h   show this help
+`;
+
+export function cmdCost(argv: string[], sink: Sink): number {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: {
+      help: { type: "boolean", short: "h" },
+      json: { type: "boolean" },
+    },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(COST_HELP);
+    return 0;
+  }
+
+  const dir = positionals[0] ?? process.cwd();
+  const room = openRoom(dir);
+  try {
+    const summary = costSummary(room);
+    if (values.json) {
+      sink.out(JSON.stringify(summary, null, 2));
+      return 0;
+    }
+
+    const roomCapText =
+      summary.roomCapUsd > 0 ? ` / $${summary.roomCapUsd.toFixed(2)} cap` : " (no room cap set)";
+    const roomOver = summary.roomCapUsd > 0 && summary.roomTotalUsd > summary.roomCapUsd;
+    sink.out(
+      `${bold("Room total")}: $${summary.roomTotalUsd.toFixed(2)}${roomCapText}${
+        roomOver ? red(" — over cap") : ""
+      }`,
+    );
+    if (room.isHalted()) sink.out(red("  HALTED"));
+    sink.out("");
+
+    sink.out(bold(`Per member (${summary.members.length})`));
+    if (summary.members.length === 0) {
+      sink.out(dim("  Nothing reported yet."));
+      return 0;
+    }
+    for (const row of table(
+      summary.members.map((m) => {
+        const over = m.capUsd > 0 && m.totalUsd > m.capUsd;
+        const capText = m.capUsd > 0 ? `$${m.capUsd.toFixed(2)} cap` : "no cap";
+        return [m.name, `$${m.totalUsd.toFixed(2)}`, capText, over ? red("over cap") : ""];
+      }),
+    )) {
+      sink.out(`  ${row}`);
+    }
+    return 0;
+  } finally {
+    room.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// history
+// ---------------------------------------------------------------------------
+
+const HISTORY_HELP = `Usage: atrium history <path> [dir]
+
+Every version an artifact has had: log position, author, when, and size.
+A path that was later deleted still shows its versions here — deletion does
+not erase what came before it.
+
+Options:
+  --json       print machine-readable JSON instead
+  --help, -h   show this help
+`;
+
+export function cmdHistory(argv: string[], sink: Sink): number {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: {
+      help: { type: "boolean", short: "h" },
+      json: { type: "boolean" },
+    },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(HISTORY_HELP);
+    return 0;
+  }
+
+  const path = positionals[0];
+  if (path === undefined || path.trim() === "") {
+    sink.err('history needs a path, e.g. "atrium history draft.md".');
+    return 2;
+  }
+
+  const dir = positionals[1] ?? process.cwd();
+  const room = openRoom(dir);
+  try {
+    const versions = listVersions(room, path);
+
+    if (values.json) {
+      sink.out(JSON.stringify(versions, null, 2));
+      return 0;
+    }
+    if (versions.length === 0) {
+      sink.out(dim(`No history for ${path}.`));
+      return 0;
+    }
+    for (const row of table(
+      versions.map((v) => [
+        `#${v.seq}`,
+        v.author,
+        v.ts,
+        v.kind === "deleted" ? "deleted" : `${v.bytes} bytes`,
+      ]),
+    )) {
+      sink.out(row);
+    }
+    return 0;
+  } finally {
+    room.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// diff
+// ---------------------------------------------------------------------------
+
+const DIFF_HELP = `Usage: atrium diff <path> [dir] [--from SEQ] [--to SEQ]
+
+A unified diff between two versions of an artifact. Defaults to the last two
+versions recorded for the path. Refuses to run a line diff on binary
+content — it says so instead of printing garbage.
+
+Options:
+  --from <seq>  earlier log position (default: second-to-last version)
+  --to <seq>    later log position (default: last version)
+  --help, -h    show this help
+`;
+
+export function cmdDiff(argv: string[], sink: Sink): number {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: {
+      help: { type: "boolean", short: "h" },
+      from: { type: "string" },
+      to: { type: "string" },
+    },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(DIFF_HELP);
+    return 0;
+  }
+
+  const path = positionals[0];
+  if (path === undefined || path.trim() === "") {
+    sink.err('diff needs a path, e.g. "atrium diff draft.md".');
+    return 2;
+  }
+
+  const dir = positionals[1] ?? process.cwd();
+  const room = openRoom(dir);
+  try {
+    let fromSeq: number;
+    let toSeq: number;
+
+    if (values.from !== undefined || values.to !== undefined) {
+      if (values.from === undefined || values.to === undefined) {
+        sink.err("--from and --to must be given together, or not at all.");
+        return 2;
+      }
+      fromSeq = Number(values.from);
+      toSeq = Number(values.to);
+      if (!Number.isInteger(fromSeq) || !Number.isInteger(toSeq)) {
+        sink.err("--from and --to must be whole numbers.");
+        return 2;
+      }
+    } else {
+      const versions = listVersions(room, path);
+      if (versions.length < 2) {
+        sink.err(
+          `${path} has ${versions.length === 0 ? "no" : "only one"} recorded version; there is nothing to diff. Pass --from and --to explicitly if you mean something else.`,
+        );
+        return 1;
+      }
+      const previous = versions[versions.length - 2];
+      const latest = versions[versions.length - 1];
+      // versions.length >= 2 was just checked above, so both are defined.
+      fromSeq = previous!.seq;
+      toSeq = latest!.seq;
+    }
+
+    const diff = diffArtifact(room, path, fromSeq, toSeq);
+
+    if (diff.identical) {
+      sink.out(dim(`No differences between #${fromSeq} and #${toSeq}.`));
+      return 0;
+    }
+    sink.out(diff.patch.replace(/\n$/, ""));
+    return 0;
+  } finally {
+    room.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // task — the human's hands on the board
 // ---------------------------------------------------------------------------
 //
@@ -1064,6 +1287,9 @@ Commands:
   replay <seq> [dir]    the board as it looked at that point in the log
   context [dir]         the shared brief and its token total against the ceiling
   search <query> [dir]  full-text search over the room's artifacts
+  cost [dir]            per-member and room spend totals against the caps
+  history <path> [dir]  every version an artifact has had
+  diff <path> [dir]     a unified diff between two versions of an artifact
   serve [dir]           serve the room to an MCP client over stdin/stdout
   task <subcommand>     create, inspect, and administer tasks — see "atrium task --help"
 
@@ -1115,6 +1341,12 @@ function dispatch(argv: string[], sink: Sink): number {
       return cmdContext(rest, sink);
     case "search":
       return cmdSearch(rest, sink);
+    case "cost":
+      return cmdCost(rest, sink);
+    case "history":
+      return cmdHistory(rest, sink);
+    case "diff":
+      return cmdDiff(rest, sink);
     case "task":
       return cmdTask(rest, sink);
     default:
@@ -1150,30 +1382,43 @@ export function runCli(argv: string[], sink: Sink): number {
   }
 }
 
-const SERVE_HELP = `atrium serve — serve a room to an MCP client over stdin/stdout
+const SERVE_HELP = `atrium serve — serve a room to an MCP client
 
 Usage: atrium serve [dir] [options]
 
-Point an MCP client at this. In most clients that means a config entry
-along the lines of:
+By default this speaks MCP over stdin/stdout. Point an MCP client at it with
+a config entry along the lines of:
 
   { "command": "atrium", "args": ["serve", "/path/to/room"] }
 
 The agent calls the "join" tool first, which hands back a session token
 and the room's shared brief.
 
+Pass --http for a client that cannot spawn a process — a browser, or
+anything across a container boundary. That serves the same tools over
+HTTP instead, as a single POST endpoint (default "/mcp") taking JSON-RPC
+messages. Every request needs "Authorization: Bearer <token>": run
+"atrium invite" first to mint one, since there is no anonymous "join"
+over HTTP. The server binds to 127.0.0.1 only, by design; pass --host to
+change that deliberately.
+
 Options:
   --token <token>  rejoin as an existing member instead of joining afresh
+                    (stdio only)
+  --http           serve over HTTP instead of stdio
+  --port <n>       HTTP port (default: an OS-assigned free port)
+  --host <host>    HTTP bind address (default: 127.0.0.1)
   --help, -h       show this help
 
-Nothing but protocol messages is written to stdout, so this is not a
-command to run by hand expecting output.
+Nothing but protocol messages is written to stdout in stdio mode, so
+that mode is not one to run by hand expecting output.
 `;
 
 /**
  * Kept apart from the other commands because it is a different shape: it runs
- * until the client closes the connection rather than printing something and
- * returning an exit code, and its stdout belongs to the protocol.
+ * until the client closes the connection (stdio) or the process is signalled
+ * to stop (HTTP), rather than printing something and returning an exit code.
+ * In stdio mode its stdout belongs to the protocol.
  */
 export async function cmdServe(argv: string[], sink: Sink): Promise<number> {
   const { values, positionals } = parseArgs({
@@ -1181,6 +1426,9 @@ export async function cmdServe(argv: string[], sink: Sink): Promise<number> {
     options: {
       help: { type: "boolean", short: "h" },
       token: { type: "string" },
+      http: { type: "boolean" },
+      port: { type: "string" },
+      host: { type: "string" },
     },
     allowPositionals: true,
   });
@@ -1189,8 +1437,35 @@ export async function cmdServe(argv: string[], sink: Sink): Promise<number> {
     return 0;
   }
 
+  let port: number | undefined;
+  if (values.port !== undefined) {
+    port = Number(values.port);
+    if (!Number.isInteger(port) || port < 0 || port > 65535) {
+      sink.err(`--port must be a whole number between 0 and 65535 (got "${values.port}").`);
+      return 2;
+    }
+  }
+
   const room = openRoom(positionals[0] ?? process.cwd());
   try {
+    if (values.http) {
+      const handle = await serveHttp(room, { port, host: values.host });
+      process.stderr.write(`atrium: serving ${room.config.name} over http at ${handle.url}\n`);
+      process.stderr.write(
+        `atrium: every request needs "Authorization: Bearer <token>" — run "atrium invite" for one\n`,
+      );
+      // Runs until told to stop: there is no equivalent of stdin closing for
+      // an HTTP server, so this command's own lifetime is a signal handler.
+      await new Promise<void>((resolve) => {
+        const shutdown = (): void => {
+          handle.close().then(resolve, resolve);
+        };
+        process.once("SIGINT", shutdown);
+        process.once("SIGTERM", shutdown);
+      });
+      return 0;
+    }
+
     // Announced on stderr: stdout is the protocol stream and must stay clean.
     process.stderr.write(`atrium: serving ${room.config.name} (${room.dir})\n`);
     await serveStdio(room, values.token ? { token: values.token } : {});

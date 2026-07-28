@@ -101,3 +101,28 @@ export {
   sha256,
   estimateTokens,
 } from "./util.js";
+export {
+  serveHttp,
+  type ServeHttpOptions,
+  type HttpServerHandle,
+} from "./http.js";
+export {
+  foldCosts,
+  spendTotals,
+  costSummary,
+  reportCost,
+  type CostReportInput,
+  type SpendTotals,
+  type MemberSpend,
+  type CostSummary,
+} from "./cost.js";
+export {
+  storeBlob,
+  loadBlob,
+  listVersions,
+  contentAt,
+  isBinaryContent,
+  diffArtifact,
+  type ArtifactVersion,
+  type DiffResult,
+} from "./snapshots.js";

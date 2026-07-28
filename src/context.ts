@@ -247,6 +247,11 @@ function describeEvent(
     case "room.halted":
       return `Room halted: ${event.data.reason}`;
 
+    case "cost.reported":
+      return `${actorName(event.data.memberId)} reported $${event.data.amountUsd.toFixed(2)}${
+        event.data.model ? ` (${event.data.model})` : ""
+      }.`;
+
     default: {
       // Logs outlast the code that reads them. A type this build does not know
       // about (a future event, or a log written by a different version of
