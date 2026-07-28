@@ -100,3 +100,13 @@ export {
   sha256,
   estimateTokens,
 } from "./util.js";
+export {
+  storeBlob,
+  loadBlob,
+  listVersions,
+  contentAt,
+  isBinaryContent,
+  diffArtifact,
+  type ArtifactVersion,
+  type DiffResult,
+} from "./snapshots.js";

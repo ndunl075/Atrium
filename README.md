@@ -44,9 +44,16 @@ my-room/
     log.db        every event, append-only
     room.json     settings
     tokens.json   session tokens
+    objects/      content-addressed blobs, one per unique artifact version
   CONTEXT.md      the shared brief
   ...             whatever the agents are producing
 ```
+
+Every artifact write stores its bytes under `objects/<hash prefix>/<hash
+rest>`, keyed by the sha256 the log already records. Rewriting the same
+content back costs nothing — the blob is already there — so `atrium history`
+and `atrium diff` can show what a document actually said at any point the log
+remembers, not just that something was written.
 
 ## Getting a room going
 
@@ -86,6 +93,8 @@ Watch what happens from the outside:
 node dist/cli.js board ./newsroom     # what needs doing, and who has it
 node dist/cli.js log ./newsroom       # everything that happened, in order
 node dist/cli.js replay 12 ./newsroom # how the board looked at step 12
+node dist/cli.js history draft.md ./newsroom  # every version this file has had
+node dist/cli.js diff draft.md ./newsroom     # what changed between the last two
 ```
 
 ## What a room looks like from a client
