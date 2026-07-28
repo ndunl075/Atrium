@@ -115,3 +115,13 @@ export {
   type MemberSpend,
   type CostSummary,
 } from "./cost.js";
+export {
+  storeBlob,
+  loadBlob,
+  listVersions,
+  contentAt,
+  isBinaryContent,
+  diffArtifact,
+  type ArtifactVersion,
+  type DiffResult,
+} from "./snapshots.js";

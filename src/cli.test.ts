@@ -5,9 +5,13 @@ import { join } from "node:path";
 
 import { Room } from "./room.js";
 import { claimTask, createTask } from "./board.js";
+import { acquireLease } from "./leases.js";
+import { writeArtifact } from "./artifacts.js";
 import {
   cmdBoard,
   cmdContext,
+  cmdDiff,
+  cmdHistory,
   cmdInit,
   cmdInvite,
   cmdLog,
@@ -379,6 +383,122 @@ describe("search", () => {
 
     expect(code).toBe(0);
     expect(JSON.parse(s.outLines.join("\n"))[0].path).toBe("notes.md");
+  });
+});
+
+describe("history", () => {
+  it("lists every version with seq, author and size", () => {
+    const { dir, room } = tempRoom();
+    const a = room.join({ name: "a", role: "worker" }).member;
+    acquireLease(room, a.id, "draft.md");
+    writeArtifact(room, a.id, "draft.md", "v1");
+    writeArtifact(room, a.id, "draft.md", "v2!");
+
+    const s = sink();
+    const code = cmdHistory(["draft.md", dir], s);
+
+    expect(code).toBe(0);
+    const text = s.outLines.join("\n");
+    expect(text).toContain("2 bytes");
+    expect(text).toContain("3 bytes");
+    expect(text).toContain(a.id);
+  });
+
+  it("--json produces parseable version records", () => {
+    const { dir, room } = tempRoom();
+    const a = room.join({ name: "a", role: "worker" }).member;
+    acquireLease(room, a.id, "draft.md");
+    writeArtifact(room, a.id, "draft.md", "hello");
+
+    const s = sink();
+    const code = cmdHistory(["--json", "draft.md", dir], s);
+    const versions = JSON.parse(s.outLines.join("\n"));
+
+    expect(code).toBe(0);
+    expect(versions).toHaveLength(1);
+    expect(versions[0]).toMatchObject({ path: "draft.md", kind: "written", bytes: 5 });
+  });
+
+  it("says so plainly when a path has no history", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+    const code = cmdHistory(["never-written.md", dir], s);
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/No history/);
+  });
+
+  it("requires a path", () => {
+    const s = sink();
+    const code = cmdHistory([], s);
+    expect(code).not.toBe(0);
+    expect(s.errLines.join("\n")).toMatch(/path/);
+  });
+});
+
+describe("diff", () => {
+  it("defaults to the last two versions and prints a unified diff", () => {
+    const { dir, room } = tempRoom();
+    const a = room.join({ name: "a", role: "worker" }).member;
+    acquireLease(room, a.id, "draft.md");
+    writeArtifact(room, a.id, "draft.md", "one\ntwo\n");
+    writeArtifact(room, a.id, "draft.md", "one\nTWO\n");
+
+    const s = sink();
+    const code = cmdDiff(["draft.md", dir], s);
+
+    expect(code).toBe(0);
+    const text = s.outLines.join("\n");
+    expect(text).toContain("-two");
+    expect(text).toContain("+TWO");
+  });
+
+  it("accepts explicit --from and --to", () => {
+    const { dir, room } = tempRoom();
+    const a = room.join({ name: "a", role: "worker" }).member;
+    acquireLease(room, a.id, "draft.md");
+    const v1 = writeArtifact(room, a.id, "draft.md", "first");
+    writeArtifact(room, a.id, "draft.md", "second");
+    const v3 = writeArtifact(room, a.id, "draft.md", "third");
+
+    const s = sink();
+    const code = cmdDiff(["draft.md", dir, "--from", String(v1.seq), "--to", String(v3.seq)], s);
+
+    expect(code).toBe(0);
+    const text = s.outLines.join("\n");
+    expect(text).toContain("-first");
+    expect(text).toContain("+third");
+  });
+
+  it("reports no differences instead of an empty diff", () => {
+    const { dir, room } = tempRoom();
+    const a = room.join({ name: "a", role: "worker" }).member;
+    acquireLease(room, a.id, "draft.md");
+    writeArtifact(room, a.id, "draft.md", "same");
+    writeArtifact(room, a.id, "draft.md", "same");
+
+    const s = sink();
+    const code = cmdDiff(["draft.md", dir], s);
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/No differences/);
+  });
+
+  it("refuses when there are fewer than two versions to compare", () => {
+    const { dir, room } = tempRoom();
+    const a = room.join({ name: "a", role: "worker" }).member;
+    acquireLease(room, a.id, "draft.md");
+    writeArtifact(room, a.id, "draft.md", "only one");
+
+    const s = sink();
+    const code = cmdDiff(["draft.md", dir], s);
+    expect(code).not.toBe(0);
+    expect(s.errLines.join("\n")).toMatch(/one recorded version/);
+  });
+
+  it("requires a path", () => {
+    const s = sink();
+    const code = cmdDiff([], s);
+    expect(code).not.toBe(0);
+    expect(s.errLines.join("\n")).toMatch(/path/);
   });
 });
 

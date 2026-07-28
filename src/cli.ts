@@ -27,9 +27,11 @@ import {
   Room,
   costSummary,
   describeHistory,
+  diffArtifact,
   foldTasks,
   getContext,
   listTasks,
+  listVersions,
   searchArtifacts,
 } from "./index.js";
 import { serveHttp } from "./http.js";
@@ -688,6 +690,152 @@ export function cmdCost(argv: string[], sink: Sink): number {
 }
 
 // ---------------------------------------------------------------------------
+// history
+// ---------------------------------------------------------------------------
+
+const HISTORY_HELP = `Usage: atrium history <path> [dir]
+
+Every version an artifact has had: log position, author, when, and size.
+A path that was later deleted still shows its versions here — deletion does
+not erase what came before it.
+
+Options:
+  --json       print machine-readable JSON instead
+  --help, -h   show this help
+`;
+
+export function cmdHistory(argv: string[], sink: Sink): number {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: {
+      help: { type: "boolean", short: "h" },
+      json: { type: "boolean" },
+    },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(HISTORY_HELP);
+    return 0;
+  }
+
+  const path = positionals[0];
+  if (path === undefined || path.trim() === "") {
+    sink.err('history needs a path, e.g. "atrium history draft.md".');
+    return 2;
+  }
+
+  const dir = positionals[1] ?? process.cwd();
+  const room = openRoom(dir);
+  try {
+    const versions = listVersions(room, path);
+
+    if (values.json) {
+      sink.out(JSON.stringify(versions, null, 2));
+      return 0;
+    }
+    if (versions.length === 0) {
+      sink.out(dim(`No history for ${path}.`));
+      return 0;
+    }
+    for (const row of table(
+      versions.map((v) => [
+        `#${v.seq}`,
+        v.author,
+        v.ts,
+        v.kind === "deleted" ? "deleted" : `${v.bytes} bytes`,
+      ]),
+    )) {
+      sink.out(row);
+    }
+    return 0;
+  } finally {
+    room.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// diff
+// ---------------------------------------------------------------------------
+
+const DIFF_HELP = `Usage: atrium diff <path> [dir] [--from SEQ] [--to SEQ]
+
+A unified diff between two versions of an artifact. Defaults to the last two
+versions recorded for the path. Refuses to run a line diff on binary
+content — it says so instead of printing garbage.
+
+Options:
+  --from <seq>  earlier log position (default: second-to-last version)
+  --to <seq>    later log position (default: last version)
+  --help, -h    show this help
+`;
+
+export function cmdDiff(argv: string[], sink: Sink): number {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: {
+      help: { type: "boolean", short: "h" },
+      from: { type: "string" },
+      to: { type: "string" },
+    },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(DIFF_HELP);
+    return 0;
+  }
+
+  const path = positionals[0];
+  if (path === undefined || path.trim() === "") {
+    sink.err('diff needs a path, e.g. "atrium diff draft.md".');
+    return 2;
+  }
+
+  const dir = positionals[1] ?? process.cwd();
+  const room = openRoom(dir);
+  try {
+    let fromSeq: number;
+    let toSeq: number;
+
+    if (values.from !== undefined || values.to !== undefined) {
+      if (values.from === undefined || values.to === undefined) {
+        sink.err("--from and --to must be given together, or not at all.");
+        return 2;
+      }
+      fromSeq = Number(values.from);
+      toSeq = Number(values.to);
+      if (!Number.isInteger(fromSeq) || !Number.isInteger(toSeq)) {
+        sink.err("--from and --to must be whole numbers.");
+        return 2;
+      }
+    } else {
+      const versions = listVersions(room, path);
+      if (versions.length < 2) {
+        sink.err(
+          `${path} has ${versions.length === 0 ? "no" : "only one"} recorded version; there is nothing to diff. Pass --from and --to explicitly if you mean something else.`,
+        );
+        return 1;
+      }
+      const previous = versions[versions.length - 2];
+      const latest = versions[versions.length - 1];
+      // versions.length >= 2 was just checked above, so both are defined.
+      fromSeq = previous!.seq;
+      toSeq = latest!.seq;
+    }
+
+    const diff = diffArtifact(room, path, fromSeq, toSeq);
+
+    if (diff.identical) {
+      sink.out(dim(`No differences between #${fromSeq} and #${toSeq}.`));
+      return 0;
+    }
+    sink.out(diff.patch.replace(/\n$/, ""));
+    return 0;
+  } finally {
+    room.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch and entry point
 // ---------------------------------------------------------------------------
 
@@ -705,6 +853,8 @@ Commands:
   context [dir]         the shared brief and its token total against the ceiling
   search <query> [dir]  full-text search over the room's artifacts
   cost [dir]            per-member and room spend totals against the caps
+  history <path> [dir]  every version an artifact has had
+  diff <path> [dir]     a unified diff between two versions of an artifact
   serve [dir]           serve the room to an MCP client over stdin/stdout
 
 Run "atrium <command> --help" for details on any command.
@@ -757,6 +907,10 @@ function dispatch(argv: string[], sink: Sink): number {
       return cmdSearch(rest, sink);
     case "cost":
       return cmdCost(rest, sink);
+    case "history":
+      return cmdHistory(rest, sink);
+    case "diff":
+      return cmdDiff(rest, sink);
     default:
       sink.err(`Unknown command "${command}". Run "atrium --help" for the list of commands.`);
       return 2;

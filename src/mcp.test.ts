@@ -236,6 +236,31 @@ describe("writing files", () => {
     expect(data.exists).toBe(true);
   });
 
+  it("reads a past version by seq, even after the path has moved on", async () => {
+    const room = tempRoom();
+    const server = new RoomServer(room);
+    await call(server, "join", { name: "scout", role: "worker" });
+
+    const first = await call(server, "write_artifact", {
+      path: "notes/draft.md",
+      content: "# Draft v1\n",
+    });
+    await call(server, "write_artifact", {
+      path: "notes/draft.md",
+      content: "# Draft v2\n",
+    });
+
+    const { data } = await call(server, "read_artifact", {
+      path: "notes/draft.md",
+      seq: first.data.seq,
+    });
+    expect(data.exists).toBe(true);
+    expect(data.content).toBe("# Draft v1\n");
+
+    const current = await call(server, "read_artifact", { path: "notes/draft.md" });
+    expect(current.data.content).toBe("# Draft v2\n");
+  });
+
   it("refuses a path another member is holding, and says who", async () => {
     const room = tempRoom();
     const alice = new RoomServer(room);

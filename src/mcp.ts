@@ -33,6 +33,7 @@ import { readArtifact, writeArtifact } from "./artifacts.js";
 import { reviewTask, submitTask } from "./acceptance.js";
 import { Room } from "./room.js";
 import { searchArtifacts } from "./search.js";
+import { contentAt } from "./snapshots.js";
 import type { Acceptance, Member, MemberRole, TaskId } from "./types.js";
 
 /** Newest first. An older client gets its own version echoed back. */
@@ -195,8 +196,21 @@ export class RoomServer {
           str(args, "task_id") as TaskId,
         );
 
-      case "read_artifact":
-        return readArtifact(this.room, str(args, "path"));
+      case "read_artifact": {
+        const path = str(args, "path");
+        // A past seq reads history rather than the current file: the content
+        // the path held right after that log position, which still works
+        // for a path that has since been deleted.
+        if (args["seq"] === undefined) return readArtifact(this.room, path);
+        const seq = num(args, "seq", 0);
+        const bytes = contentAt(this.room, path, seq);
+        return {
+          path,
+          seq,
+          exists: bytes !== undefined,
+          content: bytes?.toString("utf8"),
+        };
+      }
 
       case "write_artifact": {
         // Leases are taken here rather than being a separate tool the agent has
@@ -586,10 +600,13 @@ const TOOLS: ToolDefinition[] = [
   {
     name: "read_artifact",
     description:
-      "Read a file in the room. The seq it returns is the version you read; pass it back as based_on_seq when you write, so you find out if somebody changed it underneath you.",
+      "Read a file in the room. The seq it returns is the version you read; pass it back as based_on_seq when you write, so you find out if somebody changed it underneath you. Pass seq to read what the file held right after that log position instead of its current contents — this works even for a path that has since been deleted.",
     inputSchema: {
       type: "object",
-      properties: { path: { type: "string" } },
+      properties: {
+        path: { type: "string" },
+        seq: { type: "number", description: "Read history: the content as of this log position, instead of now." },
+      },
       required: ["path"],
     },
   },

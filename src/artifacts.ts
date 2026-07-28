@@ -32,6 +32,7 @@ import { currentLease } from "./leases.js";
 import { resolveArtifact, toArtifactPath } from "./paths.js";
 import { Room } from "./room.js";
 import { LeaseError, StaleError } from "./errors.js";
+import { storeBlob } from "./snapshots.js";
 import type { AnyEvent, ArtifactInfo, EventType, MemberId } from "./types.js";
 import { sha256 } from "./util.js";
 
@@ -220,6 +221,10 @@ export function writeArtifact(
   renameSync(tmp, abs);
 
   const hash = sha256(bytes);
+  // Content-addressed: the blob for this hash may already be on disk, from
+  // this path's own history or another one's, in which case this is a
+  // no-op. See snapshots.ts for why that is the whole dedup story.
+  storeBlob(room, hash, bytes);
   const event = room.log.append(actorId, "artifact.written", {
     path: relPath,
     bytes: bytes.length,

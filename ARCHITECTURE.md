@@ -86,6 +86,8 @@ A **Member** is any process holding a session token for a Room. Members are type
 
 Files in the Room's working directory. Real files on real disk, not abstractions. Any agent that can call `open()` can work with them. Artifacts are versioned through the event log rather than through a custom VCS. `[ASSUMPTION]` Git is deliberately not used internally at v1; a Room directory can itself live inside a git repo without Atrium knowing.
 
+Every write's content is retained, not just its hash. `artifact.written` records a sha256 of the bytes it wrote; the bytes themselves are kept in a content-addressed blob store under `.atrium/objects/<hash prefix>/<hash rest>`, keyed by that same hash. This is what makes replay mean something for artifacts specifically, not just for the board: `atrium history` lists every version a path has had, and `atrium diff` shows what changed between two of them, including a version from before the path was deleted. Content-addressing keeps it cheap — identical bytes are stored once no matter how many times they are written or under how many paths — and it is still not a VCS: there is no tree, no commit graph, no merge, just a flat store of blobs that the log's own sequence numbers give history to.
+
 ### 3.4 Tasks
 
 A work item on the board. States:
