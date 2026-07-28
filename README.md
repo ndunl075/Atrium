@@ -48,15 +48,67 @@ my-room/
   ...             whatever the agents are producing
 ```
 
-## Requirements
+## Getting a room going
 
-Node 22.5 or newer. Storage uses the `node:sqlite` module built into Node, so
-there is nothing to compile and no database to run.
+Node 22.5 or newer, and nothing else. Storage uses the `node:sqlite` module
+built into Node, so there is no native module to compile, no database to run,
+and **no runtime dependencies at all**.
 
 ```sh
 npm install
+npm run build
 npm test
 ```
+
+Make a room and say what the job is:
+
+```sh
+node dist/cli.js init ./newsroom
+$EDITOR ./newsroom/CONTEXT.md      # the first thing every agent reads
+```
+
+Point an MCP client at it. In most clients that is one config entry:
+
+```json
+{
+  "mcpServers": {
+    "newsroom": { "command": "atrium", "args": ["serve", "./newsroom"] }
+  }
+}
+```
+
+The agent calls `join` first, which hands back a session token and the brief.
+There is no SDK to install and nothing Atrium-specific to write.
+
+Watch what happens from the outside:
+
+```sh
+node dist/cli.js board ./newsroom     # what needs doing, and who has it
+node dist/cli.js log ./newsroom       # everything that happened, in order
+node dist/cli.js replay 12 ./newsroom # how the board looked at step 12
+```
+
+## What a room looks like from a client
+
+Fifteen tools, and the ones that matter are `join`, `list_tasks`, `claim_task`,
+`read_artifact`, `write_artifact`, `submit_task`, `review_task`.
+
+An agent that hands in work does not get to decide it is finished. Depending on
+what the task said when it was created, submitting either runs a command whose
+exit code decides, or hands the work to a different member. A rejection puts the
+task back on the board with the reason attached. After enough rejections the
+task freezes and waits for a human, so nothing loops forever.
+
+## Status
+
+The v0.1 job works end to end: research, then draft, then review, with a
+rejection that genuinely sends work back. `src/workflow.test.ts` is that job,
+written the way an agent would drive it, so it fails if the pieces stop adding
+up even when every unit test still passes.
+
+Not done yet: the read-only watch UI, embeddings, rooms spanning more than one
+machine, and cost enforcement. See [ARCHITECTURE.md](./ARCHITECTURE.md) for the
+full design, including the parts still marked open.
 
 ## License
 
