@@ -27,6 +27,7 @@ export {
   getTask,
   claimTask,
   releaseTask,
+  restartTask,
   sweepExpiredClaims,
   type CreateTaskInput,
   type TaskFilter,

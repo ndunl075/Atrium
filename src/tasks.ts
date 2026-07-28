@@ -145,6 +145,14 @@ export function foldTasks(
         break;
       }
 
+      case "task.unescalated": {
+        const task = tasks.get(event.data.taskId);
+        if (!task) break;
+        task.escalated = false;
+        task.seq = event.seq;
+        break;
+      }
+
       default:
         break;
     }
