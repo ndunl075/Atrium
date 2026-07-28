@@ -86,11 +86,12 @@ Watch what happens from the outside:
 node dist/cli.js board ./newsroom     # what needs doing, and who has it
 node dist/cli.js log ./newsroom       # everything that happened, in order
 node dist/cli.js replay 12 ./newsroom # how the board looked at step 12
+node dist/cli.js cost ./newsroom      # self-reported spend against the caps, if any are set
 ```
 
 ## What a room looks like from a client
 
-Fifteen tools, and the ones that matter are `join`, `list_tasks`, `claim_task`,
+Sixteen tools, and the ones that matter are `join`, `list_tasks`, `claim_task`,
 `read_artifact`, `write_artifact`, `submit_task`, `review_task`.
 
 An agent that hands in work does not get to decide it is finished. Depending on
@@ -106,9 +107,15 @@ rejection that genuinely sends work back. `src/workflow.test.ts` is that job,
 written the way an agent would drive it, so it fails if the pieces stop adding
 up even when every unit test still passes.
 
-Not done yet: the read-only watch UI, embeddings, rooms spanning more than one
-machine, and cost enforcement. See [ARCHITECTURE.md](./ARCHITECTURE.md) for the
-full design, including the parts still marked open.
+Rooms can also set a per-room and per-member spend cap now (`atrium cost`,
+`report_cost`). It is honest advisory accounting, not enforcement: Atrium does
+not make the model calls, so it only totals what a member chooses to report,
+and a member that never reports is never charged. Crossing a cap halts the
+room the same way running out of action budget does.
+
+Not done yet: the read-only watch UI, embeddings, and rooms spanning more than
+one machine. See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design,
+including the parts still marked open.
 
 ## License
 

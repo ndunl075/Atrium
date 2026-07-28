@@ -25,6 +25,7 @@ import {
   isAtriumError,
   InvalidError,
   Room,
+  costSummary,
   describeHistory,
   foldTasks,
   getContext,
@@ -613,6 +614,79 @@ export function cmdSearch(argv: string[], sink: Sink): number {
 }
 
 // ---------------------------------------------------------------------------
+// cost
+// ---------------------------------------------------------------------------
+
+const COST_HELP = `Usage: atrium cost [dir]
+
+Per-member and room spend totals, folded from self-reported cost.reported
+events, against the room's caps. A cap of 0 means the room has not set one.
+
+This is advisory in the strict sense ARCHITECTURE.md §6 describes: Atrium
+did not make any model call itself, so a member that never calls
+report_cost is never charged, and there is no way to make it charged
+retroactively. It only shows what was reported.
+
+Options:
+  --json       print machine-readable JSON instead
+  --help, -h   show this help
+`;
+
+export function cmdCost(argv: string[], sink: Sink): number {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: {
+      help: { type: "boolean", short: "h" },
+      json: { type: "boolean" },
+    },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(COST_HELP);
+    return 0;
+  }
+
+  const dir = positionals[0] ?? process.cwd();
+  const room = openRoom(dir);
+  try {
+    const summary = costSummary(room);
+    if (values.json) {
+      sink.out(JSON.stringify(summary, null, 2));
+      return 0;
+    }
+
+    const roomCapText =
+      summary.roomCapUsd > 0 ? ` / $${summary.roomCapUsd.toFixed(2)} cap` : " (no room cap set)";
+    const roomOver = summary.roomCapUsd > 0 && summary.roomTotalUsd > summary.roomCapUsd;
+    sink.out(
+      `${bold("Room total")}: $${summary.roomTotalUsd.toFixed(2)}${roomCapText}${
+        roomOver ? red(" — over cap") : ""
+      }`,
+    );
+    if (room.isHalted()) sink.out(red("  HALTED"));
+    sink.out("");
+
+    sink.out(bold(`Per member (${summary.members.length})`));
+    if (summary.members.length === 0) {
+      sink.out(dim("  Nothing reported yet."));
+      return 0;
+    }
+    for (const row of table(
+      summary.members.map((m) => {
+        const over = m.capUsd > 0 && m.totalUsd > m.capUsd;
+        const capText = m.capUsd > 0 ? `$${m.capUsd.toFixed(2)} cap` : "no cap";
+        return [m.name, `$${m.totalUsd.toFixed(2)}`, capText, over ? red("over cap") : ""];
+      }),
+    )) {
+      sink.out(`  ${row}`);
+    }
+    return 0;
+  } finally {
+    room.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch and entry point
 // ---------------------------------------------------------------------------
 
@@ -629,6 +703,7 @@ Commands:
   replay <seq> [dir]    the board as it looked at that point in the log
   context [dir]         the shared brief and its token total against the ceiling
   search <query> [dir]  full-text search over the room's artifacts
+  cost [dir]            per-member and room spend totals against the caps
   serve [dir]           serve the room to an MCP client over stdin/stdout
 
 Run "atrium <command> --help" for details on any command.
@@ -679,6 +754,8 @@ function dispatch(argv: string[], sink: Sink): number {
       return cmdContext(rest, sink);
     case "search":
       return cmdSearch(rest, sink);
+    case "cost":
+      return cmdCost(rest, sink);
     default:
       sink.err(`Unknown command "${command}". Run "atrium --help" for the list of commands.`);
       return 2;
