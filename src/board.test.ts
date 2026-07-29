@@ -134,6 +134,37 @@ describe("createTask", () => {
     expect(task.acceptance).toEqual({ kind: "command", command: "npm test" });
   });
 
+  it("accepts a per-task timeoutSeconds override on a command acceptance", () => {
+    const room = tempRoom();
+    const worker = room.join({ name: "scout", role: "worker" }).member;
+
+    const task = createTask(room, worker.id, {
+      title: "full suite",
+      acceptance: { kind: "command", command: "npm test", timeoutSeconds: 300 },
+    });
+
+    expect(task.acceptance).toEqual({
+      kind: "command",
+      command: "npm test",
+      timeoutSeconds: 300,
+    });
+  });
+
+  it.each([0, -5, NaN, Infinity])(
+    "refuses a command acceptance's timeoutSeconds of %p",
+    (timeoutSeconds) => {
+      const room = tempRoom();
+      const worker = room.join({ name: "scout", role: "worker" }).member;
+
+      expect(() =>
+        createTask(room, worker.id, {
+          title: "draft",
+          acceptance: { kind: "command", command: "npm test", timeoutSeconds },
+        }),
+      ).toThrow(InvalidError);
+    },
+  );
+
   it("stops once the room's action budget is spent", () => {
     // room.created + member.joined leaves no room in a budget of 2.
     const room = tempRoom({ config: { actionBudget: 2 } });

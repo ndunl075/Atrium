@@ -48,9 +48,61 @@ export interface AcceptanceCommandResult {
  * bloat the log; whoever is reading a verdict needs a diagnosis, not a dump. */
 const MAX_OUTPUT_CHARS = 8_000;
 
-/** Long enough for most build and test commands, short enough that a hung
- * process does not stall the room forever. */
+/**
+ * Long enough for most build and test commands, short enough that a hung
+ * process does not stall the room forever — this was the one timeout every
+ * command acceptance got before `commandTimeoutSeconds` existed, and is now
+ * only a safety net: it applies when a room's `commandTimeoutSeconds` was
+ * saved by a version of this code before the field existed and has genuinely
+ * never been read back as a real number (see `resolveTimeout`), not as the
+ * everyday default. The everyday default lives in `DEFAULT_ROOM_CONFIG` in
+ * types.ts, and happens to be the same 60 seconds so that nothing changes for
+ * a room that has not touched the new setting.
+ */
 const DEFAULT_COMMAND_TIMEOUT_MS = 60_000;
+
+/** Where a command's timeout came from, so a killed command's own message can
+ * point at the thing to change instead of leaving whoever reads it guessing
+ * whether the number is a per-task setting, the room's default, or something
+ * a caller (a test, typically) passed in directly. */
+type TimeoutOrigin = "task" | "room" | "override";
+
+interface ResolvedTimeout {
+  ms: number;
+  seconds: number;
+  origin: TimeoutOrigin;
+}
+
+/**
+ * Works out how long a task's command acceptance gets to run, and where that
+ * number came from. The task's own `timeoutSeconds` wins if it set one —
+ * that is the whole point of letting a task override the room — otherwise
+ * the room's `commandTimeoutSeconds` applies. A room setting that cannot mean
+ * anything real (zero, negative, `NaN`, a config file written before this
+ * field existed and never normalized back to a number) falls back to
+ * `DEFAULT_COMMAND_TIMEOUT_MS` rather than silently becoming "killed before
+ * it starts" or "can never time out" — `createTask` is what stops a bad
+ * per-task value from ever reaching here, so this fallback exists only for a
+ * room config nobody validated at the point it was written.
+ */
+function resolveTimeout(room: Room, task: Task): ResolvedTimeout {
+  if (task.acceptance.kind === "command" && task.acceptance.timeoutSeconds !== undefined) {
+    return {
+      ms: task.acceptance.timeoutSeconds * 1000,
+      seconds: task.acceptance.timeoutSeconds,
+      origin: "task",
+    };
+  }
+  const seconds = room.config.commandTimeoutSeconds;
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return {
+      ms: DEFAULT_COMMAND_TIMEOUT_MS,
+      seconds: DEFAULT_COMMAND_TIMEOUT_MS / 1000,
+      origin: "room",
+    };
+  }
+  return { ms: seconds * 1000, seconds, origin: "room" };
+}
 
 /** The current view of one task, folded live from the log. */
 function currentTask(room: Room, taskId: TaskId): Task {
@@ -271,11 +323,17 @@ function escalateIfNeeded(room: Room, task: Task, entries: PendingEvent[]): void
  * Runs a task's acceptance command with the room's working directory as its
  * cwd. A failing or hanging command is a normal result, never a thrown error:
  * the caller decides what a bad exit code means.
+ *
+ * `timeoutMs`, when given, overrides both the task's own `timeoutSeconds` and
+ * the room's `commandTimeoutSeconds` — this is for callers (tests, mainly)
+ * that want to force a specific limit regardless of either setting. Leave it
+ * out, which is what `submitTask` does, to get the resolution this feature is
+ * actually for: the task's own setting if it has one, otherwise the room's.
  */
 export async function runAcceptanceCommand(
   room: Room,
   task: Task,
-  timeoutMs: number = DEFAULT_COMMAND_TIMEOUT_MS,
+  timeoutMs?: number,
 ): Promise<AcceptanceCommandResult> {
   if (task.acceptance.kind !== "command") {
     throw new InvalidError(
@@ -284,7 +342,12 @@ export async function runAcceptanceCommand(
     );
   }
 
-  return runShell(task.acceptance.command, room.dir, timeoutMs);
+  const timeout: ResolvedTimeout =
+    timeoutMs !== undefined
+      ? { ms: timeoutMs, seconds: timeoutMs / 1000, origin: "override" }
+      : resolveTimeout(room, task);
+
+  return runShell(task.acceptance.command, room.dir, timeout);
 }
 
 /** Every task currently waiting on somebody to call `reviewTask`. */
@@ -305,7 +368,7 @@ export function pendingReview(room: Room): Task[] {
 function runShell(
   command: string,
   cwd: string,
-  timeoutMs: number,
+  timeout: ResolvedTimeout,
 ): Promise<AcceptanceCommandResult> {
   return new Promise((resolve) => {
     const child = spawn(command, { cwd, shell: true });
@@ -324,9 +387,11 @@ function runShell(
       finish({
         ok: false,
         exitCode: null,
-        output: `${truncate(output)}\n[timed out after ${timeoutMs}ms and was killed]`,
+        output:
+          `${truncate(output)}\n[timed out after ${timeout.seconds}s and was killed — ` +
+          `${describeTimeoutOrigin(timeout)}]`,
       });
-    }, timeoutMs);
+    }, timeout.ms);
 
     child.stdout?.on("data", (chunk: Buffer) => {
       output += chunk.toString("utf8");
@@ -349,6 +414,30 @@ function runShell(
       finish({ ok: code === 0, exitCode: code, output: truncate(output) });
     });
   });
+}
+
+/**
+ * The point of tracking `origin` at all: whoever reads a timed-out command's
+ * output needs to know this is not the command failing on its own merits, and
+ * needs a concrete next step rather than a bare number. What the two real
+ * origins actually differ on is which knob to turn.
+ */
+function describeTimeoutOrigin(timeout: ResolvedTimeout): string {
+  switch (timeout.origin) {
+    case "task":
+      return (
+        `this is this task's own acceptance.timeoutSeconds (${timeout.seconds}), not a ` +
+        `real test failure; raise it on the task if the command genuinely needs longer`
+      );
+    case "room":
+      return (
+        `this is the room's commandTimeoutSeconds (${timeout.seconds}), not a real test ` +
+        `failure; raise it on the room, or set a longer timeoutSeconds on this task's ` +
+        `command acceptance if only this command needs more time`
+      );
+    case "override":
+      return `a timeout of ${timeout.seconds}s was passed in directly for this run`;
+  }
 }
 
 function truncate(output: string): string {

@@ -99,6 +99,21 @@ export function createTask(
       'A "command" acceptance needs a non-empty command to run.',
     );
   }
+  // A per-task timeout is validated here, not just parsed, because this is
+  // the one place both entry points (create_task over MCP, "atrium task add")
+  // funnel through: a bad value caught here can never reach runAcceptanceCommand,
+  // where 0 or a negative number would kill the command before it starts and
+  // NaN or Infinity would mean it can never time out at all.
+  if (acceptance.kind === "command" && acceptance.timeoutSeconds !== undefined) {
+    const seconds = acceptance.timeoutSeconds;
+    if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) {
+      throw new InvalidError(
+        `A command acceptance's timeoutSeconds must be a finite number of seconds ` +
+          `greater than 0 (got ${JSON.stringify(acceptance.timeoutSeconds)}). Omit it ` +
+          `to use the room's commandTimeoutSeconds instead.`,
+      );
+    }
+  }
 
   const dependsOn = input.dependsOn ?? [];
 

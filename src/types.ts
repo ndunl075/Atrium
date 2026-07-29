@@ -53,7 +53,20 @@ export type TaskState =
  * trustworthy in the docs; `none` exists so that rooms can refuse it.
  */
 export type Acceptance =
-  | { kind: "command"; command: string }
+  | {
+      kind: "command";
+      command: string;
+      /**
+       * Seconds this task's command gets before it is killed and reported as
+       * a rejection. Overrides the room's `commandTimeoutSeconds` for this
+       * task only — a lint check and a full integration suite in the same
+       * room legitimately want different limits. Omit to use the room's
+       * setting. Must be a finite number greater than 0 where it is set
+       * (validated by `createTask`); zero, negative, or non-finite would mean
+       * a command killed before it starts, or never.
+       */
+      timeoutSeconds?: number;
+    }
   | { kind: "reviewer" }
   | { kind: "human" }
   | { kind: "none" };
@@ -283,6 +296,14 @@ export interface RoomConfig {
   leaseSeconds: number;
   /** Seconds a task claim lasts before the task goes back on the board. */
   claimSeconds: number;
+  /**
+   * Seconds a `command` acceptance gets to run before it is killed and
+   * reported as a rejection, for every task in the room that does not set its
+   * own `timeoutSeconds` (see `Acceptance`). Defaults to 60, the limit every
+   * command acceptance had before this setting existed, so an existing room
+   * that never touches this field behaves exactly as it did before.
+   */
+  commandTimeoutSeconds: number;
   /** Rejections a task may collect before it freezes and waits for a human. */
   maxAttempts: number;
   /** Total events a room may record before it stops itself. */
@@ -315,6 +336,7 @@ export const DEFAULT_ROOM_CONFIG: Omit<RoomConfig, "id" | "name" | "createdAt"> 
     allowUncheckedAcceptance: false,
     leaseSeconds: 300,
     claimSeconds: 300,
+    commandTimeoutSeconds: 60,
     maxAttempts: 3,
     actionBudget: 1000,
     contextTokenCeiling: 8000,

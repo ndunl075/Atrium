@@ -270,6 +270,7 @@ export function cmdOpen(argv: string[], sink: Sink): number {
     sink.out(bold("Settings"));
     sink.out(
       `  lease ${room.config.leaseSeconds}s   claim ${room.config.claimSeconds}s   ` +
+        `command timeout ${room.config.commandTimeoutSeconds}s   ` +
         `max attempts ${room.config.maxAttempts}   action budget ${room.config.actionBudget}`,
     );
     sink.out(
@@ -1221,7 +1222,12 @@ function ensureCliHuman(room: Room): MemberId {
 function acceptanceLabel(acceptance: Task["acceptance"]): string {
   switch (acceptance.kind) {
     case "command":
-      return `command — "${acceptance.command}" must exit 0`;
+      return (
+        `command — "${acceptance.command}" must exit 0` +
+        (acceptance.timeoutSeconds !== undefined
+          ? ` (killed after ${acceptance.timeoutSeconds}s)`
+          : "")
+      );
     case "reviewer":
       return "reviewer — a different member must accept";
     case "human":
@@ -1231,17 +1237,25 @@ function acceptanceLabel(acceptance: Task["acceptance"]): string {
   }
 }
 
-/** Parses `--acceptance` and `--command` together, since one only makes sense
- * with the other. Returns `undefined` (not an error) when neither is given,
- * so `createTask`'s own default of `reviewer` applies. */
+/** Parses `--acceptance`, `--command`, and `--command-timeout` together,
+ * since the latter two only make sense with `--acceptance command`. Returns
+ * `undefined` (not an error) when none is given, so `createTask`'s own
+ * default of `reviewer` applies. `createTask` still validates the timeout
+ * itself — this is just where a bad number gets a CLI-shaped message instead
+ * of one written for an MCP client. */
 function parseAcceptanceFlag(
   sink: Sink,
   kind: string | undefined,
   command: string | undefined,
+  commandTimeout: string | undefined,
 ): { ok: true; value: Acceptance | undefined } | { ok: false } {
   if (kind === undefined) {
     if (command !== undefined) {
       sink.err("--command only makes sense together with --acceptance command.");
+      return { ok: false };
+    }
+    if (commandTimeout !== undefined) {
+      sink.err("--command-timeout only makes sense together with --acceptance command.");
       return { ok: false };
     }
     return { ok: true, value: undefined };
@@ -1255,10 +1269,32 @@ function parseAcceptanceFlag(
       sink.err('--acceptance command needs --command "the shell command to run".');
       return { ok: false };
     }
-    return { ok: true, value: { kind: "command", command } };
+    let timeoutSeconds: number | undefined;
+    if (commandTimeout !== undefined) {
+      timeoutSeconds = Number(commandTimeout);
+      if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
+        sink.err(
+          `--command-timeout must be a finite number of seconds greater than 0 (got "${commandTimeout}"). ` +
+            `Omit it to use the room's commandTimeoutSeconds instead.`,
+        );
+        return { ok: false };
+      }
+    }
+    return {
+      ok: true,
+      value: {
+        kind: "command",
+        command,
+        ...(timeoutSeconds !== undefined ? { timeoutSeconds } : {}),
+      },
+    };
   }
   if (command !== undefined) {
     sink.err("--command only makes sense together with --acceptance command.");
+    return { ok: false };
+  }
+  if (commandTimeout !== undefined) {
+    sink.err("--command-timeout only makes sense together with --acceptance command.");
     return { ok: false };
   }
   return { ok: true, value: { kind } };
@@ -1274,6 +1310,9 @@ Options:
   --depends-on <id,id,...>   task ids that must be accepted before this one
   --acceptance <kind>        command, reviewer, human, or none (default: reviewer)
   --command <shell command>  required when --acceptance is command
+  --command-timeout <secs>  seconds before this task's command is killed and
+                              reported as a rejection; only with --acceptance
+                              command (default: the room's commandTimeoutSeconds)
   --help, -h                 show this help
 
 A room with allowUncheckedAcceptance turned off (the default) refuses
@@ -1291,6 +1330,7 @@ export function cmdTaskAdd(argv: string[], sink: Sink): number {
       "depends-on": { type: "string" },
       acceptance: { type: "string" },
       command: { type: "string" },
+      "command-timeout": { type: "string" },
     },
     allowPositionals: true,
   });
@@ -1299,7 +1339,12 @@ export function cmdTaskAdd(argv: string[], sink: Sink): number {
     return 0;
   }
 
-  const acceptance = parseAcceptanceFlag(sink, values.acceptance, values.command);
+  const acceptance = parseAcceptanceFlag(
+    sink,
+    values.acceptance,
+    values.command,
+    values["command-timeout"],
+  );
   if (!acceptance.ok) return 2;
 
   const dependsOn = (values["depends-on"] ?? "")
