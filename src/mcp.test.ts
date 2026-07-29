@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +6,7 @@ import { PassThrough } from "node:stream";
 
 import { RoomServer, serveStdio } from "./mcp.js";
 import { Room } from "./room.js";
+import { acquireLease } from "./leases.js";
 import { pruneVersions } from "./snapshots.js";
 
 const created: Array<{ room: Room; dir: string }> = [];
@@ -18,6 +19,7 @@ function tempRoom(config?: Parameters<typeof Room.create>[1]): Room {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   while (created.length) {
     const entry = created.pop()!;
     try {
@@ -335,6 +337,66 @@ describe("writing files", () => {
       content: "nope",
     });
     expect(isError).toBe(true);
+  });
+});
+
+describe("list_leases", () => {
+  it("finds out a path is held before write_artifact would refuse it", async () => {
+    const room = tempRoom();
+    const alice = new RoomServer(room);
+    const bob = new RoomServer(room);
+    const a = await call(alice, "join", { name: "alice", role: "worker" });
+    await call(bob, "join", { name: "bob", role: "worker" });
+
+    await call(alice, "write_artifact", { path: "shared.md", content: "mine" });
+
+    const { data, isError } = await call(bob, "list_leases", { path: "shared.md" });
+    expect(isError).toBe(false);
+    expect(data.leases).toHaveLength(1);
+    expect(data.leases[0].path).toBe("shared.md");
+    expect(data.leases[0].holder).toBe(a.data.member.id);
+  });
+
+  it("lists every leased path when no path is given", async () => {
+    const room = tempRoom();
+    const server = new RoomServer(room);
+    await call(server, "join", { name: "scout", role: "worker" });
+
+    await call(server, "write_artifact", { path: "draft.md", content: "one" });
+    await call(server, "write_artifact", { path: "notes.md", content: "two" });
+
+    const { data } = await call(server, "list_leases");
+    expect(data.leases.map((l: any) => l.path).sort()).toEqual(["draft.md", "notes.md"]);
+  });
+
+  it("says nothing is leased rather than a stale or wrong answer", async () => {
+    const room = tempRoom();
+    const server = new RoomServer(room);
+    await call(server, "join", { name: "scout", role: "worker" });
+
+    const { data } = await call(server, "list_leases");
+    expect(data.leases).toEqual([]);
+  });
+
+  it("does not report a lapsed lease as held", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+    const room = tempRoom({ config: { leaseSeconds: 60 } });
+    const server = new RoomServer(room);
+    const joined = await call(server, "join", { name: "scout", role: "worker" });
+    acquireLease(room, joined.data.member.id, "draft.md");
+
+    // The lease.acquired event is still in the log; only its expiry has
+    // passed, which is exactly the distinction currentLease/foldLeases exist
+    // to make and this tool must not collapse.
+    vi.setSystemTime(new Date("2026-01-01T00:10:00.000Z"));
+
+    const { data } = await call(server, "list_leases");
+    expect(data.leases).toEqual([]);
+
+    const { data: single } = await call(server, "list_leases", { path: "draft.md" });
+    expect(single.leases).toEqual([]);
   });
 });
 
