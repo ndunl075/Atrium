@@ -320,4 +320,102 @@ describe("describeHistory", () => {
     expect(last?.line).toMatch(/does not know how to describe/);
     expect(last?.line).toContain("some.future.event");
   });
+
+  it("refuses an unknown --type filter, naming the valid ones", () => {
+    const room = tempRoom();
+    room.join({ name: "scout", role: "worker" });
+
+    expect(() => describeHistory(room, { types: ["task.acepted" as never] })).toThrow(
+      /Unknown event type/,
+    );
+    expect(() => describeHistory(room, { types: ["task.acepted" as never] })).toThrow(
+      /task\.accepted/,
+    );
+  });
+
+  it("filters by actor, matching either the member id or the name it joined under", () => {
+    const room = tempRoom();
+    const scout = room.join({ name: "scout", role: "worker" }).member;
+    const editor = room.join({ name: "editor", role: "reviewer" }).member;
+    room.log.append(scout.id, "note.posted", { memberId: scout.id, text: "from scout" });
+    room.log.append(editor.id, "note.posted", { memberId: editor.id, text: "from editor" });
+
+    const byName = describeHistory(room, { actor: "scout" });
+    expect(byName.every((l) => l.actor === scout.id)).toBe(true);
+    expect(byName.some((l) => l.line.includes("from scout"))).toBe(true);
+
+    const byId = describeHistory(room, { actor: editor.id });
+    expect(byId.every((l) => l.actor === editor.id)).toBe(true);
+  });
+
+  it("filters by actor 'system' for events no member caused", () => {
+    const room = tempRoom();
+    const lines = describeHistory(room, { actor: "system" });
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines.every((l) => l.actor === "system")).toBe(true);
+  });
+
+  it("filters by a case-insensitive substring of the rendered line, not the raw data", () => {
+    const room = tempRoom();
+    const worker = room.join({ name: "scout", role: "worker" }).member;
+    room.log.append(worker.id, "note.posted", { memberId: worker.id, text: "check the DRAFT" });
+    room.log.append(worker.id, "note.posted", { memberId: worker.id, text: "unrelated" });
+
+    const hits = describeHistory(room, { contains: "draft" });
+    expect(hits).toHaveLength(1);
+    expect(hits[0]?.line).toContain("DRAFT");
+  });
+
+  it("intersects filters rather than widening the result", () => {
+    const room = tempRoom();
+    const scout = room.join({ name: "scout", role: "worker" }).member;
+    const editor = room.join({ name: "editor", role: "reviewer" }).member;
+    room.log.append(scout.id, "note.posted", { memberId: scout.id, text: "draft ready" });
+    room.log.append(editor.id, "note.posted", { memberId: editor.id, text: "draft ready" });
+    room.log.append(scout.id, "note.posted", { memberId: scout.id, text: "unrelated" });
+
+    // Both events mention "draft ready", and both actors post a note, but
+    // only one event is both scout's AND mentions "draft" — the filters must
+    // narrow together, not each independently widen the result.
+    const both = describeHistory(room, { actor: "scout", contains: "draft" });
+    expect(both).toHaveLength(1);
+    expect(both[0]?.line).toContain("draft ready");
+  });
+
+  it("reports a real empty result — filters that match nothing return an empty array, not an error", () => {
+    const room = tempRoom();
+    room.join({ name: "scout", role: "worker" });
+
+    const lines = describeHistory(room, { contains: "something that never happened" });
+    expect(lines).toEqual([]);
+  });
+
+  it("treats the sequence range as inclusive at both ends", () => {
+    const room = tempRoom();
+    const worker = room.join({ name: "scout", role: "worker" }).member;
+    const a = room.log.append(worker.id, "note.posted", { memberId: worker.id, text: "a" });
+    const b = room.log.append(worker.id, "note.posted", { memberId: worker.id, text: "b" });
+    const c = room.log.append(worker.id, "note.posted", { memberId: worker.id, text: "c" });
+
+    const middle = describeHistory(room, { from: b.seq, to: b.seq });
+    expect(middle.map((l) => l.seq)).toEqual([b.seq]);
+
+    const span = describeHistory(room, { from: a.seq, to: c.seq, types: ["note.posted"] });
+    expect(span.map((l) => l.seq)).toEqual([a.seq, b.seq, c.seq]);
+  });
+
+  it("applies limit after actor/contains filtering, not before", () => {
+    const room = tempRoom();
+    const worker = room.join({ name: "scout", role: "worker" }).member;
+    room.log.append(worker.id, "note.posted", { memberId: worker.id, text: "no match" });
+    room.log.append(worker.id, "note.posted", { memberId: worker.id, text: "match one" });
+    room.log.append(worker.id, "note.posted", { memberId: worker.id, text: "match two" });
+
+    // If limit were applied before the contains filter, capping at 2 from the
+    // start of the raw log could cut out both matches. Applied after, it
+    // takes the first 2 of the *filtered* result instead.
+    const limited = describeHistory(room, { contains: "match", limit: 2 });
+    expect(limited).toHaveLength(2);
+    expect(limited.every((l) => l.line.includes("match"))).toBe(true);
+  });
 });

@@ -11,10 +11,9 @@
 import { existsSync, readFileSync } from "node:fs";
 
 import { InvalidError, NotFoundError } from "./errors.js";
-import type { ReadOptions } from "./log.js";
 import { resolveArtifact, toArtifactPath } from "./paths.js";
 import type { Room } from "./room.js";
-import type { AnyEvent, MemberId, TaskId } from "./types.js";
+import type { AnyEvent, EventType, MemberId, TaskId } from "./types.js";
 import { estimateTokens } from "./util.js";
 
 export interface PinnedArtifact {
@@ -36,6 +35,57 @@ export interface HistoryLine {
   ts: string;
   actor: MemberId | "system";
   line: string;
+}
+
+/**
+ * `describeHistory`'s filters. `from`, `to`, `types`, and `limit` are exactly
+ * `ReadOptions` (see log.ts) — the sequence range and type filter are applied
+ * in SQL before anything is rendered, and an unknown type is refused there
+ * with the list of valid ones rather than quietly matching nothing.
+ *
+ * `actor` and `contains` exist only here, not in `ReadOptions`, because both
+ * need something the raw log does not have: `actor` needs the roster (to let
+ * a person say "scout" instead of a member id), and `contains` needs the
+ * rendered sentence, which does not exist until `describeEvent` has run.
+ * Both filters, and `limit`, are therefore applied after the SQL read rather
+ * than passed into it — `limit` still means "at most this many, taken from
+ * the start of the *filtered* result," which only changes anything when it
+ * is combined with `actor` or `contains`.
+ */
+export interface HistoryOptions {
+  /** First sequence to include. Defaults to the beginning. */
+  from?: number;
+  /** Last sequence to include, inclusive. Defaults to the end. */
+  to?: number;
+  /** Only these kinds of event. An unknown type is refused, not ignored. */
+  types?: EventType[];
+  /**
+   * Only events caused by this actor. Matched exactly against either the raw
+   * actor recorded in the log (a member id, or the literal "system") or the
+   * name that member joined under — whichever a caller is more likely to
+   * have on hand. Case-sensitive and exact, not a substring: these are
+   * identifiers, and ARCHITECTURE.md §3.2 puts no uniqueness rule on member
+   * names, so a loose match on "scout" could quietly blend two different
+   * members who happened to pick the same name.
+   */
+  actor?: string;
+  /**
+   * Only lines whose rendered sentence contains this text — the same text
+   * "atrium log" prints and the same text the MCP `read_log` tool returns,
+   * not the raw JSON underneath it. That is the text a person or agent
+   * catching up is actually reading, and it is where names and task titles
+   * already live in prose form. Matched case-insensitively, because a
+   * rendered sentence capitalizes the start of every line and a caller
+   * searching for a word in the middle of one has no reason to also get the
+   * casing right. Always a plain substring search, never a regular
+   * expression: a malformed pattern typed at a command line or handed over
+   * by an agent should never be able to throw partway through printing a
+   * room's history — a substring match that always works beats a regex that
+   * sometimes doesn't.
+   */
+  contains?: string;
+  /** At most this many lines, taken from the start of the filtered result. */
+  limit?: number;
 }
 
 /**
@@ -161,10 +211,15 @@ export function listPinned(room: Room): string[] {
 /**
  * Tier 3: the log rendered as sentences, so an agent joining mid-run can read
  * what happened instead of needing somebody to summarize it for them.
+ *
+ * See `HistoryOptions` for what each filter matches and why; they intersect
+ * rather than widen the result, the same as every other multi-filter listing
+ * in this codebase (`atrium config`'s settings, `list_tasks`'s state and
+ * claimable) — passing more than one narrows further, it never means "or."
  */
 export function describeHistory(
   room: Room,
-  options: ReadOptions = {},
+  options: HistoryOptions = {},
 ): HistoryLine[] {
   const names = new Map(room.roster().map((m) => [m.id, m.name] as const));
   const actorName = (id: MemberId | "system"): string =>
@@ -179,12 +234,42 @@ export function describeHistory(
     return title ? `${taskId} (${title})` : taskId;
   };
 
-  return room.log.read(options).map((event) => ({
+  const { actor, contains, limit, ...rangeOptions } = options;
+
+  // Sequence range and event type narrow the SQL read itself, exactly like
+  // every other caller of EventLog.read — cheapest to apply first, and it's
+  // where an unknown --type gets refused (see log.ts). actor and contains
+  // cannot: actor needs the roster this function already built above, and
+  // contains needs the rendered sentence, which does not exist until
+  // describeEvent runs below, so both are applied as a second pass after.
+  let events = room.log.read(rangeOptions);
+  if (actor !== undefined) {
+    events = events.filter((event) => event.actor === actor || actorName(event.actor) === actor);
+  }
+
+  let lines = events.map((event) => ({
     seq: event.seq,
     ts: event.ts,
     actor: event.actor,
     line: describeEvent(event, actorName, taskLabel),
   }));
+
+  if (contains !== undefined) {
+    const needle = contains.toLowerCase();
+    lines = lines.filter((line) => line.line.toLowerCase().includes(needle));
+  }
+
+  // Applied last, and against the filtered result, not the raw read: "at
+  // most N" should mean N after actor/contains have already narrowed things
+  // down, not N events that then get filtered down further to fewer than N.
+  if (limit !== undefined) {
+    if (!Number.isInteger(limit) || limit < 0) {
+      throw new InvalidError("limit must be a whole number, zero or more.");
+    }
+    lines = lines.slice(0, limit);
+  }
+
+  return lines;
 }
 
 function describeEvent(

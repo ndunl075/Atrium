@@ -80,6 +80,24 @@ describe("EventLog", () => {
     }
   });
 
+  it("refuses an unknown event type instead of quietly matching nothing", () => {
+    const { log, cleanup } = tempLog();
+    try {
+      log.append("m1", "note.posted", { memberId: "m1", text: "one" });
+
+      expect(() => log.read({ types: ["note.posetd" as never] })).toThrow(
+        /Unknown event type/,
+      );
+      // The whole point: a caller who cannot see the source should still be
+      // able to find out what would have worked.
+      expect(() => log.read({ types: ["note.posetd" as never] })).toThrow(
+        /note\.posted/,
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
   it("writes a batch all at once or not at all", () => {
     const { log, cleanup } = tempLog();
     try {

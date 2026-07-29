@@ -266,6 +266,52 @@ export interface EventMap {
 
 export type EventType = keyof EventMap;
 
+/**
+ * Every event type, registered once so the log's `types` filter (see
+ * `ReadOptions` in log.ts, and "atrium log --type" / the MCP `read_log`
+ * tool) can validate against something other than a second, hand-copied
+ * list. `Record<EventType, true>` is what does the actual work: if EventMap
+ * ever gains a key without this object gaining the matching one, the build
+ * fails right here instead of the new event type just silently never
+ * matching any `--type` filter anyone types. The config.ts settings registry
+ * uses the same trick for the same reason.
+ */
+const EVENT_TYPE_REGISTRY: Record<EventType, true> = {
+  "room.created": true,
+  "member.joined": true,
+  "member.left": true,
+  "task.created": true,
+  "task.claimed": true,
+  "task.released": true,
+  "task.blocked": true,
+  "task.unblocked": true,
+  "task.submitted": true,
+  "task.accepted": true,
+  "task.rejected": true,
+  "task.escalated": true,
+  "task.unescalated": true,
+  "artifact.written": true,
+  "artifact.deleted": true,
+  "artifact.pruned": true,
+  "lease.acquired": true,
+  "lease.renewed": true,
+  "lease.released": true,
+  "context.pinned": true,
+  "context.unpinned": true,
+  "note.posted": true,
+  "room.halted": true,
+  "cost.reported": true,
+};
+
+/** Every event type there is, in the order EventMap declares them. */
+export function eventTypes(): EventType[] {
+  return Object.keys(EVENT_TYPE_REGISTRY) as EventType[];
+}
+
+export function isEventType(type: string): type is EventType {
+  return (eventTypes() as string[]).includes(type);
+}
+
 export interface Event<T extends EventType = EventType> {
   /** Position in the log. Starts at 1 and never has gaps. */
   seq: number;

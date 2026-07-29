@@ -56,7 +56,17 @@ import { serveHttp } from "./http.js";
 import { serveWatch } from "./watch.js";
 import { PACKAGE_VERSION } from "./util.js";
 import { serveStdio } from "./mcp.js";
-import type { Acceptance, Member, MemberId, MemberRole, Task, TaskState, Verdict } from "./index.js";
+import type {
+  Acceptance,
+  EventType,
+  HistoryOptions,
+  Member,
+  MemberId,
+  MemberRole,
+  Task,
+  TaskState,
+  Verdict,
+} from "./index.js";
 
 export interface Sink {
   out(line: string): void;
@@ -350,11 +360,44 @@ const LOG_HELP = `Usage: atrium log [dir]
 
 What has happened in the room, as readable lines, oldest first.
 
+A room with a thousand events and nobody to summarize them needs a way to
+ask a question of the log rather than read all of it — that's what the
+filters below are for. Passing more than one intersects them rather than
+widening the search: "--type task.rejected --actor scout" shows only
+task.rejected events whose actor is scout, not everything either alone
+would match. Matching nothing is a normal answer and is reported as one,
+distinct from an empty room — the message names what was filtered on, so
+you can tell a filter that found nothing from a filter that was wrong.
+
 Options:
-  --limit <n>  show at most n lines
-  --json       print machine-readable JSON instead
-  --help, -h   show this help
+  --type <type,type,...>  only these event types, e.g. task.accepted,task.rejected.
+                            An unknown type is refused and lists the valid
+                            ones, rather than silently matching nothing.
+  --actor <who>            only this actor's events — a member's name as it
+                            appears in the log, their member id, or "system".
+                            Exact match, not a substring.
+  --contains <text>        only lines whose rendered text contains this,
+                            case-insensitively. Plain substring match, never
+                            a regular expression.
+  --from <seq>             first sequence number to include
+  --to <seq>               last sequence number to include (inclusive)
+  --limit <n>              show at most n lines of the filtered result
+  --json                   print machine-readable JSON instead
+  --help, -h               show this help
 `;
+
+/** Names what a log query was filtered on, for the one case where that
+ * matters most: nothing matched, and the person reading needs to see
+ * whether that's because the room is quiet or because the filter was wrong. */
+function describeLogFilters(options: HistoryOptions): string {
+  const parts: string[] = [];
+  if (options.types && options.types.length > 0) parts.push(`type in ${options.types.join(", ")}`);
+  if (options.actor !== undefined) parts.push(`actor "${options.actor}"`);
+  if (options.contains !== undefined) parts.push(`text containing "${options.contains}"`);
+  if (options.from !== undefined) parts.push(`seq >= ${options.from}`);
+  if (options.to !== undefined) parts.push(`seq <= ${options.to}`);
+  return parts.join(" and ");
+}
 
 export function cmdLog(argv: string[], sink: Sink): number {
   const { values, positionals } = parseArgs({
@@ -363,6 +406,11 @@ export function cmdLog(argv: string[], sink: Sink): number {
       help: { type: "boolean", short: "h" },
       json: { type: "boolean" },
       limit: { type: "string" },
+      type: { type: "string" },
+      actor: { type: "string" },
+      contains: { type: "string" },
+      from: { type: "string" },
+      to: { type: "string" },
     },
     allowPositionals: true,
   });
@@ -374,17 +422,58 @@ export function cmdLog(argv: string[], sink: Sink): number {
   const limit = parseLimit(sink, values.limit);
   if (!limit.ok) return 2;
 
+  let fromSeq: number | undefined;
+  if (values.from !== undefined) {
+    fromSeq = Number(values.from);
+    if (!Number.isInteger(fromSeq)) {
+      sink.err(`--from must be a whole number (got "${values.from}").`);
+      return 2;
+    }
+  }
+  let toSeq: number | undefined;
+  if (values.to !== undefined) {
+    toSeq = Number(values.to);
+    if (!Number.isInteger(toSeq)) {
+      sink.err(`--to must be a whole number (got "${values.to}").`);
+      return 2;
+    }
+  }
+  if (values.actor !== undefined && !values.actor.trim()) {
+    sink.err('--actor needs a value, e.g. "atrium log --actor scout".');
+    return 2;
+  }
+  if (values.contains !== undefined && !values.contains.trim()) {
+    sink.err('--contains needs text to search for, e.g. "atrium log --contains draft.md".');
+    return 2;
+  }
+  const types = values.type
+    ? values.type.split(",").map((t) => t.trim()).filter((t) => t.length > 0)
+    : undefined;
+
   const dir = positionals[0] ?? process.cwd();
   const room = openRoom(dir);
   try {
-    const lines = describeHistory(room, limit.value === undefined ? {} : { limit: limit.value });
+    const options: HistoryOptions = {
+      ...(fromSeq !== undefined ? { from: fromSeq } : {}),
+      ...(toSeq !== undefined ? { to: toSeq } : {}),
+      ...(types && types.length > 0 ? { types: types as EventType[] } : {}),
+      ...(values.actor !== undefined ? { actor: values.actor } : {}),
+      ...(values.contains !== undefined ? { contains: values.contains } : {}),
+      ...(limit.value !== undefined ? { limit: limit.value } : {}),
+    };
+    // Validates --type against the real EventMap and throws an AtriumError
+    // naming the valid ones if it's wrong; runCli is what turns that into a
+    // message and an exit code (see cmdInit's tests for why that split
+    // matters — this function itself just lets it propagate).
+    const lines = describeHistory(room, options);
 
     if (values.json) {
       sink.out(JSON.stringify(lines, null, 2));
       return 0;
     }
     if (lines.length === 0) {
-      sink.out(dim("Nothing has happened yet."));
+      const filters = describeLogFilters(options);
+      sink.out(dim(filters ? `Nothing matched ${filters}.` : "Nothing has happened yet."));
       return 0;
     }
     for (const row of table(lines.map((l) => [`#${l.seq}`, l.ts, l.line]))) {
