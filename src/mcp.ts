@@ -325,6 +325,14 @@ export class RoomServer {
         });
       }
 
+      // Who else is in the room, per ARCHITECTURE.md §3.2 and §2: a member's
+      // manifest is how it self-describes on join, and specialists in a
+      // blackboard model are meant to observe each other rather than be told
+      // about each other by an orchestrator that does not exist here. This is
+      // the read half of that — the write half is already `join` itself.
+      case "list_members":
+        return this.room.roster();
+
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
@@ -757,5 +765,11 @@ const TOOLS: ToolDefinition[] = [
       },
       required: ["amount_usd"],
     },
+  },
+  {
+    name: "list_members",
+    description:
+      "Everyone who has ever joined this room, including members who have since left (marked inactive rather than removed). For each one: role, tags, and the manifest it gave on join describing what it's good for. This is entirely self-reported — ARCHITECTURE.md §3.2 deliberately has no capability schema behind it, so nothing here is verified. Treat it as a lead on who to ask or hand work to, not a guarantee of what anyone can actually do.",
+    inputSchema: { type: "object", properties: {} },
   },
 ];

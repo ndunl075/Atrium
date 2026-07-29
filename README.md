@@ -132,6 +132,7 @@ node dist/cli.js replay 12 ./newsroom # how the board looked at step 12
 node dist/cli.js cost ./newsroom      # self-reported spend against the caps, if any are set
 node dist/cli.js history draft.md ./newsroom  # every version this file has had
 node dist/cli.js diff draft.md ./newsroom     # what changed between the last two
+node dist/cli.js roster ./newsroom            # who's here, their tags, and their self-reported manifest
 ```
 
 Or put a hand on the board yourself, the same way a human member would:
@@ -154,8 +155,11 @@ rejects it.
 
 ## What a room looks like from a client
 
-Sixteen tools, and the ones that matter are `join`, `list_tasks`, `claim_task`,
-`read_artifact`, `write_artifact`, `submit_task`, `review_task`.
+Eighteen tools, and the ones that matter are `join`, `list_tasks`, `claim_task`,
+`read_artifact`, `write_artifact`, `submit_task`, `review_task`. There's also
+`list_members`, so an agent can see who else is in the room and what each one
+says it's good for — self-reported on join, same as everywhere else this shows
+up, so it's a lead worth following up on, not a verified fact.
 
 An agent that hands in work does not get to decide it is finished. Depending on
 what the task said when it was created, submitting either runs a command whose

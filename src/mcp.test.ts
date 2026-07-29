@@ -486,3 +486,58 @@ describe("over stdio", () => {
     expect(ids).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
   });
 });
+
+describe("list_members", () => {
+  it("lists a member with the manifest and tags it self-reported on join", async () => {
+    const room = tempRoom();
+    const server = new RoomServer(room);
+    await call(server, "join", {
+      name: "scout",
+      role: "worker",
+      manifest: "finds sources",
+      tags: ["research"],
+    });
+
+    const { data, isError } = await call(server, "list_members");
+
+    expect(isError).toBe(false);
+    expect(data).toHaveLength(1);
+    expect(data[0].name).toBe("scout");
+    expect(data[0].manifest).toBe("finds sources");
+    expect(data[0].tags).toEqual(["research"]);
+    expect(data[0].active).toBe(true);
+  });
+
+  it("keeps a member who has left on the list, marked inactive rather than dropped", async () => {
+    const room = tempRoom();
+    const { member } = room.join({ name: "scout", role: "worker" });
+    room.leave(member.id);
+
+    const server = new RoomServer(room);
+    const { data } = await call(server, "list_members");
+
+    expect(data).toHaveLength(1);
+    expect(data[0].active).toBe(false);
+  });
+
+  it("shows every member in the room, not just the caller", async () => {
+    const room = tempRoom();
+    const alice = new RoomServer(room);
+    const bob = new RoomServer(room);
+    await call(alice, "join", { name: "alice", role: "worker" });
+    await call(bob, "join", { name: "bob", role: "reviewer" });
+
+    const { data } = await call(alice, "list_members");
+
+    expect(data.map((m: any) => m.name).sort()).toEqual(["alice", "bob"]);
+  });
+
+  it("does not require joining first, same as get_context", async () => {
+    const room = tempRoom();
+    room.join({ name: "scout", role: "worker" });
+    const server = new RoomServer(room);
+
+    const { isError } = await call(server, "list_members");
+    expect(isError).toBe(false);
+  });
+});

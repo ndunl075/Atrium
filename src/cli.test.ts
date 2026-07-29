@@ -23,6 +23,7 @@ import {
   cmdPrune,
   cmdOpen,
   cmdReplay,
+  cmdRoster,
   cmdSearch,
   cmdServe,
   cmdTaskAdd,
@@ -929,5 +930,100 @@ describe("task unblock", () => {
 
     expect(code).not.toBe(0);
     expect(s.errLines.join("\n")).toMatch(/not escalated/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// roster
+// ---------------------------------------------------------------------------
+
+describe("roster", () => {
+  it("shows each member's role, active status, tags, and manifest", () => {
+    const { dir, room } = tempRoom();
+    room.join({
+      name: "scout",
+      role: "worker",
+      manifest: "Finds sources and summarizes them.",
+      tags: ["research", "web"],
+    });
+
+    const s = sink();
+    const code = cmdRoster([dir], s);
+    const text = s.outLines.join("\n");
+
+    expect(code).toBe(0);
+    expect(text).toContain("scout");
+    expect(text).toContain("worker");
+    expect(text).toContain("active");
+    expect(text).toContain("research, web");
+    expect(text).toContain("Finds sources and summarizes them.");
+  });
+
+  it("shows a member who has left as left, rather than hiding or dropping them", () => {
+    const { dir, room } = tempRoom();
+    const { member } = room.join({ name: "scout", role: "worker" });
+    room.leave(member.id);
+
+    const s = sink();
+    const code = cmdRoster([dir], s);
+    const text = s.outLines.join("\n");
+
+    expect(code).toBe(0);
+    expect(text).toContain("scout");
+    expect(text).toMatch(/— left/);
+  });
+
+  it("--active filters out members who have left", () => {
+    const { dir, room } = tempRoom();
+    const { member } = room.join({ name: "gone", role: "worker" });
+    room.leave(member.id);
+    room.join({ name: "still-here", role: "worker" });
+
+    const s = sink();
+    const code = cmdRoster(["--active", dir], s);
+    const text = s.outLines.join("\n");
+
+    expect(code).toBe(0);
+    expect(text).toContain("still-here");
+    expect(text).not.toContain("gone");
+  });
+
+  it("does not produce ugly output for a member with no manifest or tags", () => {
+    const { dir, room } = tempRoom();
+    room.join({ name: "quiet", role: "worker" });
+
+    const s = sink();
+    const code = cmdRoster([dir], s);
+    const text = s.outLines.join("\n");
+
+    expect(code).toBe(0);
+    expect(text).toContain("quiet");
+    expect(text).toMatch(/no manifest given/);
+    expect(text).toMatch(/\(none\)/);
+    expect(text).not.toMatch(/undefined/);
+  });
+
+  it("--json produces parseable JSON matching Room.roster()'s shape", () => {
+    const { dir, room } = tempRoom();
+    room.join({ name: "scout", role: "worker", manifest: "does things", tags: ["a"] });
+
+    const s = sink();
+    const code = cmdRoster(["--json", dir], s);
+    const data = JSON.parse(s.outLines.join("\n"));
+
+    expect(code).toBe(0);
+    expect(data).toHaveLength(1);
+    expect(data[0].name).toBe("scout");
+    expect(data[0].manifest).toBe("does things");
+    expect(data[0].tags).toEqual(["a"]);
+    expect(data[0].active).toBe(true);
+  });
+
+  it("says plainly when nobody has joined yet", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+    const code = cmdRoster([dir], s);
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/Nobody has joined/);
   });
 });
