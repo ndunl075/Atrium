@@ -149,6 +149,39 @@ describe("pinning", () => {
     expect(listPinned(room)).toEqual([]);
   });
 
+  it("names what is already pinned as something to unpin, when a pin is refused", () => {
+    const room = tempRoom({ config: { contextTokenCeiling: 30 } });
+    const worker = room.join({ name: "scout", role: "worker" }).member;
+    write(room, "small.md", "keep me"); // well under a ceiling of 30
+    pinArtifact(room, worker.id, "small.md");
+
+    write(room, "big.md", "x".repeat(400));
+    let thrown: unknown;
+    try {
+      pinArtifact(room, worker.id, "big.md");
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(InvalidError);
+    const err = thrown as InstanceType<typeof InvalidError>;
+    // The point of rejecting instead of evicting is that the human gets to
+    // choose what to drop, which only works if the message names a candidate.
+    expect(err.message).toContain("small.md");
+    expect(err.message).toMatch(/Unpin one of those/);
+    expect(err.message).toMatch(/raise contextTokenCeiling/);
+    expect(err.details.pinned).toEqual(["small.md"]);
+    expect(err.details.overBy).toBeGreaterThan(0);
+  });
+
+  it("says plainly there is nothing to unpin when a refused pin is the first one", () => {
+    const room = tempRoom({ config: { contextTokenCeiling: 5 } });
+    const worker = room.join({ name: "scout", role: "worker" }).member;
+    write(room, "big.md", "x".repeat(400));
+
+    expect(() => pinArtifact(room, worker.id, "big.md")).toThrow(/Nothing else is pinned/);
+  });
+
   it("still reports the real total even when the hand-edited brief is already over the ceiling", () => {
     const room = tempRoom({ config: { contextTokenCeiling: 5 } });
     // CONTEXT.md as written by Room.create is already bigger than 5 tokens.

@@ -103,12 +103,32 @@ export function pinArtifact(room: Room, actorId: MemberId, path: string): void {
   const prospective = current + fileTokens;
 
   if (prospective > ceiling) {
+    const overBy = prospective - ceiling;
+    const alreadyPinned = listPinned(room);
+    // The whole point of rejecting instead of evicting or summarizing (see the
+    // doc comment above) is that a person decides what happens next. That only
+    // works if the message actually hands them a decision: what this pin would
+    // have cost, what the ceiling is, and — concretely, by name — what could be
+    // unpinned to make room, rather than a generic "unpin something."
+    const options =
+      alreadyPinned.length > 0
+        ? `Currently pinned: ${alreadyPinned.join(", ")}. Unpin one of those ` +
+          `("atrium context --unpin <path>", or the unpin_artifact MCP tool) to make room, ` +
+          `or raise contextTokenCeiling in .atrium/room.json if the ceiling itself is too low.`
+        : `Nothing else is pinned, so there is nothing to unpin: raise ` +
+          `contextTokenCeiling in .atrium/room.json, or pin something smaller.`;
     throw new InvalidError(
       `Pinning ${relPath} would bring the room context to ~${prospective} tokens, ` +
-        `over the ceiling of ${ceiling}. The brief and current pins are already ` +
-        `~${current} tokens; ${relPath} alone is ~${fileTokens}. Unpin something ` +
-        `first, or raise contextTokenCeiling if the ceiling is what's wrong.`,
-      { path: relPath, currentTokens: current, ceilingTokens: ceiling, fileTokens },
+        `${overBy} over the ceiling of ${ceiling}. The brief and current pins are already ` +
+        `~${current} tokens; ${relPath} alone is ~${fileTokens}. ${options}`,
+      {
+        path: relPath,
+        currentTokens: current,
+        ceilingTokens: ceiling,
+        fileTokens,
+        overBy,
+        pinned: alreadyPinned,
+      },
     );
   }
 

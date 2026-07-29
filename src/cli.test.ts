@@ -8,6 +8,7 @@ import { claimTask, createTask } from "./board.js";
 import { reviewTask, submitTask } from "./acceptance.js";
 import { acquireLease } from "./leases.js";
 import { writeArtifact } from "./artifacts.js";
+import { getContext } from "./context.js";
 import { contentAt, loadBlob, storeBlob } from "./snapshots.js";
 import { sha256 } from "./util.js";
 import {
@@ -349,6 +350,87 @@ describe("context", () => {
     expect(code).toBe(0);
     expect(typeof data.tokens).toBe("number");
     expect(data.ceiling).toBe(room.config.contextTokenCeiling);
+  });
+
+  it("--pin adds an artifact and --unpin removes it, round-tripping through the CLI", () => {
+    const { dir, room } = tempRoom();
+    writeFileSync(join(room.dir, "notes.md"), "things worth knowing");
+
+    const pinned = sink();
+    expect(cmdContext(["--pin", "notes.md", dir], pinned)).toBe(0);
+    expect(pinned.outLines.join("\n")).toMatch(/Pinned notes\.md/);
+    expect(getContext(room).pinned.map((p) => p.path)).toEqual(["notes.md"]);
+
+    const unpinned = sink();
+    expect(cmdContext(["--unpin", "notes.md", dir], unpinned)).toBe(0);
+    expect(unpinned.outLines.join("\n")).toMatch(/Unpinned notes\.md/);
+    expect(getContext(room).pinned).toEqual([]);
+  });
+
+  it("--pin provisions the CLI's own human member rather than requiring one already exist", () => {
+    const { dir, room } = tempRoom();
+    writeFileSync(join(room.dir, "notes.md"), "hello");
+
+    expect(cmdContext(["--pin", "notes.md", dir], sink())).toBe(0);
+
+    const humans = room.roster().filter((m) => m.role === "human");
+    expect(humans).toHaveLength(1);
+    expect(humans[0]?.name).toBe("cli");
+  });
+
+  it("says a file is already pinned rather than pinning it again", () => {
+    const { dir, room } = tempRoom();
+    writeFileSync(join(room.dir, "notes.md"), "hello");
+    cmdContext(["--pin", "notes.md", dir], sink());
+
+    const before = room.log.head();
+    const s = sink();
+    const code = cmdContext(["--pin", "notes.md", dir], s);
+
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/already pinned/);
+    expect(room.log.head()).toBe(before); // no duplicate context.pinned event
+  });
+
+  it("says a file was not pinned rather than silently succeeding on --unpin", () => {
+    const { dir, room } = tempRoom();
+    // ensureCliHuman provisions the "cli" member on its first touch of the
+    // room, so the log gains that one event; what matters here is that no
+    // context.unpinned event follows it.
+    const before = room.log.head();
+    const s = sink();
+    const code = cmdContext(["--unpin", "never-pinned.md", dir], s);
+
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/was not pinned/);
+    expect(room.log.head()).toBe(before + 1); // the "cli" member joining, nothing else
+  });
+
+  it("refuses --pin and --unpin together", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+    const code = cmdContext(["--pin", "a.md", "--unpin", "b.md", dir], s);
+    expect(code).not.toBe(0);
+    expect(s.errLines.join("\n")).toMatch(/either --pin or --unpin/);
+  });
+
+  it("a pin refused by the ceiling names the ceiling, the cost, and what's already pinned", () => {
+    const { dir, room } = tempRoom({ config: { contextTokenCeiling: 30 } });
+    writeFileSync(join(room.dir, "small.md"), "keep me");
+    writeFileSync(join(room.dir, "big.md"), "x".repeat(400));
+    expect(cmdContext(["--pin", "small.md", dir], sink())).toBe(0);
+
+    const s = sink();
+    const code = runCli(["context", "--pin", "big.md", dir], s);
+    const msg = s.errLines.join("\n");
+
+    expect(code).not.toBe(0);
+    expect(msg).toContain(String(room.config.contextTokenCeiling));
+    expect(msg).toContain("small.md"); // the concrete thing to unpin instead
+    expect(msg).toMatch(/raise contextTokenCeiling/);
+
+    // The refusal did not pin anything.
+    expect(getContext(room).pinned.map((p) => p.path)).toEqual(["small.md"]);
   });
 });
 

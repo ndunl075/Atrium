@@ -222,6 +222,85 @@ describe("the rule that nobody signs off their own work, through the tools", () 
   });
 });
 
+describe("pin_artifact / unpin_artifact", () => {
+  it("offers unpin_artifact with the same shape as pin_artifact", async () => {
+    const server = new RoomServer(tempRoom());
+    const res = await server.handleMessage({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+    const tools = (res?.result as any).tools as Array<{
+      name: string;
+      description: string;
+      inputSchema: any;
+    }>;
+
+    const pin = tools.find((t) => t.name === "pin_artifact");
+    const unpin = tools.find((t) => t.name === "unpin_artifact");
+    expect(pin).toBeDefined();
+    expect(unpin).toBeDefined();
+    expect(unpin!.inputSchema).toEqual(pin!.inputSchema);
+    expect(unpin!.description.length).toBeGreaterThan(20);
+  });
+
+  it("round-trips a pin through the shared brief and back out", async () => {
+    const room = tempRoom();
+    const server = new RoomServer(room);
+    await call(server, "join", { name: "scout", role: "worker" });
+    await call(server, "write_artifact", { path: "notes.md", content: "worth knowing" });
+
+    const pinned = await call(server, "pin_artifact", { path: "notes.md" });
+    expect(pinned.isError).toBe(false);
+    expect(pinned.data.changed).toBe(true);
+    expect(pinned.data.context.pinned).toEqual([{ path: "notes.md", content: "worth knowing" }]);
+
+    const unpinned = await call(server, "unpin_artifact", { path: "notes.md" });
+    expect(unpinned.isError).toBe(false);
+    expect(unpinned.data.changed).toBe(true);
+    expect(unpinned.data.context.pinned).toEqual([]);
+  });
+
+  it("reports changed:false rather than silently re-pinning something already pinned", async () => {
+    const room = tempRoom();
+    const server = new RoomServer(room);
+    await call(server, "join", { name: "scout", role: "worker" });
+    await call(server, "write_artifact", { path: "notes.md", content: "worth knowing" });
+
+    await call(server, "pin_artifact", { path: "notes.md" });
+    const again = await call(server, "pin_artifact", { path: "notes.md" });
+
+    expect(again.isError).toBe(false);
+    expect(again.data.changed).toBe(false);
+  });
+
+  it("reports changed:false rather than erroring when unpinning something never pinned", async () => {
+    const room = tempRoom();
+    const server = new RoomServer(room);
+    await call(server, "join", { name: "scout", role: "worker" });
+
+    const res = await call(server, "unpin_artifact", { path: "never-pinned.md" });
+
+    expect(res.isError).toBe(false);
+    expect(res.data.unpinned).toBe("never-pinned.md");
+    expect(res.data.changed).toBe(false);
+  });
+
+  it("refuses a pin over the ceiling with a message naming the ceiling, the cost, and what's pinned", async () => {
+    const room = tempRoom({ config: { contextTokenCeiling: 30 } });
+    const server = new RoomServer(room);
+    await call(server, "join", { name: "scout", role: "worker" });
+    await call(server, "write_artifact", { path: "small.md", content: "keep me" });
+    await call(server, "pin_artifact", { path: "small.md" });
+    await call(server, "write_artifact", { path: "big.md", content: "x".repeat(400) });
+
+    const { data, isError } = await call(server, "pin_artifact", { path: "big.md" });
+
+    expect(isError).toBe(true);
+    expect(data.error).toBe("invalid");
+    expect(data.message).toContain("30");
+    expect(data.message).toContain("small.md");
+    expect(data.message).toMatch(/raise contextTokenCeiling/);
+    expect(data.pinned).toEqual(["small.md"]);
+  });
+});
+
 describe("writing files", () => {
   it("takes the lease for you, so the agent does not have to know about leases", async () => {
     const room = tempRoom();
