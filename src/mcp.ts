@@ -36,6 +36,7 @@ import { reviewTask, submitTask } from "./acceptance.js";
 import { Room } from "./room.js";
 import { searchArtifacts } from "./search.js";
 import { contentStateAt } from "./snapshots.js";
+import { PACKAGE_VERSION } from "./util.js";
 import type { Acceptance, Member, MemberRole, TaskId } from "./types.js";
 
 /** Newest first. An older client gets its own version echoed back. */
@@ -45,7 +46,7 @@ const SUPPORTED_PROTOCOL_VERSIONS = [
   "2024-11-05",
 ] as const;
 
-const SERVER_INFO = { name: "atrium", version: "0.1.0" } as const;
+const SERVER_INFO = { name: "atrium", version: PACKAGE_VERSION } as const;
 
 export interface ToolDefinition {
   name: string;

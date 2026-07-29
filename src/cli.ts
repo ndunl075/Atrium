@@ -53,6 +53,7 @@ import {
 } from "./index.js";
 import { serveHttp } from "./http.js";
 import { serveWatch } from "./watch.js";
+import { PACKAGE_VERSION } from "./util.js";
 import { serveStdio } from "./mcp.js";
 import type { Acceptance, Member, MemberId, MemberRole, Task, TaskState, Verdict } from "./index.js";
 
@@ -2028,18 +2029,6 @@ Global flags:
   --version      print the installed version
 `;
 
-function readVersion(): string {
-  try {
-    const here = dirname(fileURLToPath(import.meta.url));
-    const pkg = JSON.parse(readFileSync(join(here, "..", "package.json"), "utf8")) as {
-      version?: string;
-    };
-    return pkg.version ?? "0.0.0";
-  } catch {
-    return "0.0.0";
-  }
-}
-
 function dispatch(argv: string[], sink: Sink): number {
   const [command, ...rest] = argv;
 
@@ -2048,7 +2037,7 @@ function dispatch(argv: string[], sink: Sink): number {
     return 0;
   }
   if (command === "--version") {
-    sink.out(readVersion());
+    sink.out(PACKAGE_VERSION);
     return 0;
   }
 
