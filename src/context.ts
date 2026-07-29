@@ -253,8 +253,17 @@ function describeEvent(
     case "lease.renewed":
       return `${actorName(event.data.memberId)} renewed the lease on ${event.data.path}.`;
 
-    case "lease.released":
-      return `${actorName(event.data.memberId)} released the lease on ${event.data.path} (${event.data.reason}).`;
+    case "lease.released": {
+      const holder = actorName(event.data.memberId);
+      // "forced" is the one case where the actor and the holder differ — a
+      // human took somebody else's lease away — and that is exactly the fact
+      // "atrium log" exists to make visible, so it gets its own sentence
+      // rather than being squeezed into the same template as the other two.
+      if (event.data.reason === "forced") {
+        return `${actorName(event.actor)} force-released ${holder}'s lease on ${event.data.path}.`;
+      }
+      return `${holder} released the lease on ${event.data.path} (${event.data.reason}).`;
+    }
 
     case "context.pinned":
       return `${actorName(event.data.memberId)} pinned ${event.data.path} to the room context.`;

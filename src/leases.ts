@@ -198,37 +198,57 @@ export function renewLease(room: Room, actorId: MemberId, path: string): Lease {
 /**
  * Gives up a lease early. The holder can always do this. A `human` member can
  * also release somebody else's lease, since humans administer the room and
- * are the escape hatch when a worker is stuck holding a path it should not be.
+ * are the escape hatch when a worker is stuck holding a path it should not be
+ * — ARCHITECTURE.md §6 makes expiry the safety net for a crashed agent, not
+ * something an operator staring at a stuck room should have to wait out.
+ *
+ * The recorded reason is worked out here rather than taken from the caller,
+ * because a caller could otherwise claim "voluntary" for a release that
+ * wasn't: `"voluntary"` when the holder releases its own lease, `"forced"`
+ * when a human takes somebody else's. (`"expired"` is never produced here —
+ * that one only comes from {@link acquireLease} noticing a lapsed lease on
+ * someone else's behalf.)
+ *
+ * Two refusals that could look alike are kept distinct rather than folded
+ * into one message: a path nobody has ever leased is not the same fact as a
+ * lease that lapsed on its own, even though both mean there is nothing live
+ * to release. Telling them apart is what lets a human trust "already
+ * lapsed" as a diagnosis instead of double-checking the log by hand.
  */
-export function releaseLease(
-  room: Room,
-  actorId: MemberId,
-  path: string,
-  reason: "voluntary" | "expired" = "voluntary",
-): void {
+export function releaseLease(room: Room, actorId: MemberId, path: string): void {
   room.assertUsable();
   const actor = room.member(actorId);
   const relPath = normalize(room, path);
 
   room.log.transaction(() => {
-    const existing = foldLeases(readLeaseEvents(room)).get(relPath);
+    const at = now();
+    const raw = rawFoldLeases(readLeaseEvents(room)).get(relPath);
+    const lapsed = raw !== undefined && hasPassed(raw.expiresAt, at);
 
-    if (!existing) {
-      throw new LeaseError(`There is no live lease on ${relPath} to release.`, {
-        path: relPath,
-      });
-    }
-    if (existing.holder !== actorId && actor.role !== "human") {
+    if (!raw) {
       throw new LeaseError(
-        `${relPath} is leased by ${existing.holder}, not you. Only the holder or a human can release it.`,
-        { path: relPath, holder: existing.holder },
+        `There is no live lease on ${relPath} to release — nobody has ever leased it.`,
+        { path: relPath },
+      );
+    }
+    if (lapsed) {
+      throw new LeaseError(
+        `The lease ${raw.holder} held on ${relPath} already lapsed at ${raw.expiresAt}; ` +
+          "there is nothing live to release. Anybody can acquire it now.",
+        { path: relPath, holder: raw.holder, expiresAt: raw.expiresAt },
+      );
+    }
+    if (raw.holder !== actorId && actor.role !== "human") {
+      throw new LeaseError(
+        `${relPath} is leased by ${raw.holder}, not you. Only the holder or a human can release it.`,
+        { path: relPath, holder: raw.holder },
       );
     }
 
     room.log.append(actorId, "lease.released", {
       path: relPath,
-      memberId: existing.holder,
-      reason,
+      memberId: raw.holder,
+      reason: raw.holder === actorId ? "voluntary" : "forced",
     });
   });
 }

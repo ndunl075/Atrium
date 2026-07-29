@@ -12,6 +12,7 @@ import {
   releaseLease,
   renewLease,
 } from "./leases.js";
+import { writeArtifact } from "./artifacts.js";
 import { ConflictError, InvalidError, LeaseError } from "./errors.js";
 import type { AnyEvent, EventMap, EventType } from "./types.js";
 
@@ -158,10 +159,87 @@ describe("acquireLease / renewLease / releaseLease", () => {
     expect(currentLease(room, "draft.md")).toBeUndefined();
   });
 
+  it("records a human's forced release as 'forced', not 'voluntary', and names both parties", () => {
+    const room = tempRoom();
+    const a = worker(room, "a");
+    const admin = room.join({ name: "nick", role: "human" }).member;
+
+    acquireLease(room, a.id, "draft.md");
+    releaseLease(room, admin.id, "draft.md");
+
+    const released = room.log.read({ types: ["lease.released"] });
+    expect(released).toHaveLength(1);
+    const event = released[0];
+    if (event?.type === "lease.released") {
+      // The actor who forced it and the member who lost the lease are
+      // different people — that distinction is the entire point of a
+      // "forced" reason existing, so both have to survive into the log.
+      expect(event.actor).toBe(admin.id);
+      expect(event.data.memberId).toBe(a.id);
+      expect(event.data.reason).toBe("forced");
+    }
+  });
+
+  it("a member releasing its own lease is still recorded as 'voluntary', even though it could also be released by a human", () => {
+    const room = tempRoom();
+    const a = worker(room, "a");
+
+    acquireLease(room, a.id, "draft.md");
+    releaseLease(room, a.id, "draft.md");
+
+    const released = room.log.read({ types: ["lease.released"] });
+    const event = released[0];
+    if (event?.type === "lease.released") {
+      expect(event.actor).toBe(a.id);
+      expect(event.data.reason).toBe("voluntary");
+    }
+  });
+
+  it("lets somebody else acquire and write a path once a human has forced the old lease off", () => {
+    const room = tempRoom();
+    const a = worker(room, "a");
+    const b = worker(room, "b");
+    const admin = room.join({ name: "nick", role: "human" }).member;
+
+    acquireLease(room, a.id, "draft.md");
+    releaseLease(room, admin.id, "draft.md");
+
+    // The whole point of forcing a lease off is that the room is unblocked
+    // afterwards, not just that the log shows a release happened.
+    acquireLease(room, b.id, "draft.md");
+    expect(currentLease(room, "draft.md")?.holder).toBe(b.id);
+    expect(writeArtifact(room, b.id, "draft.md", "b's turn").lastWrittenBy).toBe(b.id);
+  });
+
   it("refuses to release a path that has no live lease", () => {
     const room = tempRoom();
     const a = worker(room, "a");
     expect(() => releaseLease(room, a.id, "draft.md")).toThrow(/no live lease/);
+  });
+
+  it("tells apart 'never leased' from 'lease already lapsed', rather than reporting both the same way", async () => {
+    const room = tempRoom({ config: { leaseSeconds: 1 } });
+    const a = worker(room, "a");
+
+    // Never leased at all.
+    expect(() => releaseLease(room, a.id, "never-touched.md")).toThrow(
+      /nobody has ever leased it/,
+    );
+
+    // Leased, then left to lapse on its own.
+    acquireLease(room, a.id, "draft.md");
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    let error: unknown;
+    try {
+      releaseLease(room, a.id, "draft.md");
+    } catch (err) {
+      error = err;
+    }
+    expect(error).toBeInstanceOf(LeaseError);
+    expect((error as LeaseError).message).toMatch(/already lapsed/);
+    expect((error as LeaseError).message).not.toMatch(/nobody has ever leased it/);
+    expect((error as LeaseError).details.holder).toBe(a.id);
   });
 
   it("routes lease paths through resolveArtifact's protections", () => {

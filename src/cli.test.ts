@@ -6,9 +6,9 @@ import { join } from "node:path";
 import { Room } from "./room.js";
 import { claimTask, createTask } from "./board.js";
 import { reviewTask, submitTask } from "./acceptance.js";
-import { acquireLease } from "./leases.js";
+import { acquireLease, currentLease } from "./leases.js";
 import { writeArtifact } from "./artifacts.js";
-import { getContext } from "./context.js";
+import { getContext, describeHistory } from "./context.js";
 import { contentAt, loadBlob, storeBlob } from "./snapshots.js";
 import { sha256 } from "./util.js";
 import {
@@ -19,6 +19,8 @@ import {
   cmdHistory,
   cmdInit,
   cmdInvite,
+  cmdLease,
+  cmdLeaseRelease,
   cmdLeases,
   cmdLog,
   cmdPrune,
@@ -770,6 +772,121 @@ describe("leases", () => {
 
     expect(code).toBe(0);
     expect(leases).toEqual([]);
+  });
+});
+
+describe("lease release", () => {
+  it("forces another member's live lease off, naming whose it was, and the path becomes writable by someone else", () => {
+    const { dir, room } = tempRoom();
+    const scout = room.join({ name: "scout", role: "worker" }).member;
+    const other = room.join({ name: "relay", role: "worker" }).member;
+    acquireLease(room, scout.id, "draft.md");
+
+    const s = sink();
+    const code = cmdLeaseRelease(["draft.md", dir], s);
+
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toContain("scout");
+    expect(s.outLines.join("\n")).toContain("draft.md");
+    expect(currentLease(room, "draft.md")).toBeUndefined();
+
+    // The point of the command: somebody else can now hold and write the path.
+    acquireLease(room, other.id, "draft.md");
+    expect(currentLease(room, "draft.md")?.holder).toBe(other.id);
+    expect(writeArtifact(room, other.id, "draft.md", "relay's turn").lastWrittenBy).toBe(
+      other.id,
+    );
+  });
+
+  it("records the forced release in the log under the cli's own human identity, distinct from whoever lost the lease", () => {
+    const { dir, room } = tempRoom();
+    const scout = room.join({ name: "scout", role: "worker" }).member;
+    acquireLease(room, scout.id, "draft.md");
+
+    const code = cmdLeaseRelease(["draft.md", dir], sink());
+    expect(code).toBe(0);
+
+    const lines = describeHistory(room).map((h) => h.line);
+    const line = lines.find((l) => l.includes("force-released"));
+    expect(line).toBeDefined();
+    // "cli" is the auto-provisioned human identity documented in
+    // ensureCliHuman/atrium task --help, and "scout" is who actually held it —
+    // atrium log has to be able to tell a reader both facts, not just that a
+    // release happened.
+    expect(line).toContain("cli");
+    expect(line).toContain("scout");
+    expect(line).toContain("draft.md");
+  });
+
+  it("refuses plainly when the path has never been leased at all", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+    // releaseLease's LeaseError is an AtriumError, and per this file's header
+    // comment those are only turned into an exit code and a message in
+    // runCli, not inside the command itself — same as "running outside a
+    // room" below.
+    const code = runCli(["lease", "release", "never-touched.md", dir], s);
+
+    expect(code).not.toBe(0);
+    expect(s.errLines.join("\n")).toMatch(/nobody has ever leased it/);
+  });
+
+  it("refuses plainly when the lease has already lapsed, distinct from 'never leased'", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+    const { dir, room } = tempRoom({ config: { leaseSeconds: 60 } });
+    const scout = room.join({ name: "scout", role: "worker" }).member;
+    acquireLease(room, scout.id, "draft.md");
+
+    vi.setSystemTime(new Date("2026-01-01T00:10:00.000Z"));
+
+    const s = sink();
+    const code = runCli(["lease", "release", "draft.md", dir], s);
+
+    expect(code).not.toBe(0);
+    expect(s.errLines.join("\n")).toMatch(/already lapsed/);
+  });
+
+  it("needs a path", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+    const code = cmdLeaseRelease([], s);
+    expect(code).toBe(2);
+    expect(s.errLines.join("\n")).toMatch(/needs a path/);
+  });
+
+  it("is reachable both as \"atrium lease release\" and directly", () => {
+    const { dir, room } = tempRoom();
+    const scout = room.join({ name: "scout", role: "worker" }).member;
+    acquireLease(room, scout.id, "draft.md");
+
+    const s = sink();
+    const code = runCli(["lease", "release", "draft.md", dir], s);
+
+    expect(code).toBe(0);
+    expect(currentLease(room, "draft.md")).toBeUndefined();
+  });
+
+  it("\"atrium lease list\" is the same listing as \"atrium leases\"", () => {
+    const { dir, room } = tempRoom();
+    const scout = room.join({ name: "scout", role: "worker" }).member;
+    acquireLease(room, scout.id, "draft.md");
+
+    const viaNoun = sink();
+    cmdLease(["list", "--json", dir], viaNoun);
+    const viaPlural = sink();
+    cmdLeases(["--json", dir], viaPlural);
+
+    expect(viaNoun.outLines.join("\n")).toBe(viaPlural.outLines.join("\n"));
+  });
+
+  it("rejects an unknown \"atrium lease\" subcommand", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+    const code = cmdLease(["bogus", dir], s);
+    expect(code).toBe(2);
+    expect(s.errLines.join("\n")).toMatch(/Unknown "atrium lease" subcommand/);
   });
 });
 

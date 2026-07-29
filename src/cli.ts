@@ -40,6 +40,7 @@ import {
   listVersions,
   pinArtifact,
   pruneVersions,
+  releaseLease,
   releaseTask,
   resolveArtifact,
   restartTask,
@@ -1163,6 +1164,132 @@ export function cmdLeases(argv: string[], sink: Sink): number {
 }
 
 // ---------------------------------------------------------------------------
+// lease release — the escape hatch when expiry isn't fast enough
+// ---------------------------------------------------------------------------
+//
+// ARCHITECTURE.md §6 makes a lease's expiry the thing that stops a crashed
+// agent from deadlocking the room, but expiry is a safety net, not a tool: an
+// operator watching an agent die at 14:02 should not have to wait out
+// whatever's left of `leaseSeconds` before the room is usable again.
+// `releaseLease` in leases.ts has always let a `human` member take somebody
+// else's lease away; until now nothing on the command line could reach it —
+// the only "release" command was `atrium task release`, which frees a task
+// claim, a different thing from an artifact lease entirely.
+//
+// This gave "lease" two jobs: a listing (the existing `atrium leases`) and
+// now an action. Two shapes were on the table:
+//
+//   - Leave leases alone: keep `atrium leases` for listing, and add a
+//     differently-named top-level command for the action (say
+//     `atrium release-lease <path>`), the way `atrium task release`
+//     coexists with `atrium board` under unrelated names.
+//   - Fold both under one `atrium lease` noun with `list` and `release`
+//     subcommands, the same idiom `cmdTask` already established for tasks.
+//
+// The `task`/`board` split works there because "board" is already its own
+// word for "the tasks, listed" — nothing needed disambiguating. Leases don't
+// have that; "leases" and "lease release" are visibly the same noun already,
+// so giving the action a name that doesn't share it would be the confusing
+// choice, not the safe one. `atrium lease release <path> [dir]` mirrors
+// `atrium task release <id> [dir]` exactly, and `atrium lease list` sits
+// beside it so "lease" reads as one complete noun with subcommands. `atrium
+// leases` stays exactly as it was — same function, same output, same tests —
+// because it is already documented and possibly already scripted against,
+// and there is no cost to a room answering to two spellings of the same read.
+
+const LEASE_RELEASE_HELP = `Usage: atrium lease release <path> [dir]
+
+Forces a live lease off a path, whoever holds it, so somebody else can write
+it. The escape hatch for a lease left behind by an agent that crashed or is
+stuck — an operator should not have to wait out the remaining lease just to
+unblock the room (ARCHITECTURE.md §6: expiry is the safety net, not the
+tool).
+
+This is an administrative act — taking something away from another member —
+so it acts as the CLI's own "cli" human member, the same identity "atrium
+task" uses (see "atrium task --help" for why that identity exists), and is
+recorded in the log under that identity so "atrium log" shows who forced the
+release and when, distinctly from the member who lost the lease.
+
+Refuses, rather than silently doing nothing, when there is nothing to
+release: a path nobody has ever leased, or a lease that already lapsed on
+its own before this ran. Both are said plainly, since neither is "release
+succeeded."
+
+Options:
+  --help, -h   show this help
+`;
+
+export function cmdLeaseRelease(argv: string[], sink: Sink): number {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: { help: { type: "boolean", short: "h" } },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(LEASE_RELEASE_HELP);
+    return 0;
+  }
+
+  const path = positionals[0];
+  if (path === undefined || path.trim() === "") {
+    sink.err('lease release needs a path, e.g. "atrium lease release draft.md".');
+    return 2;
+  }
+  const dir = positionals[1] ?? process.cwd();
+
+  const room = openRoom(dir);
+  try {
+    // Read the holder before releasing — afterwards there is nothing left to
+    // ask, and "released X's lease" is the whole point of this command's
+    // output over the generic "released" a self-release would print.
+    const before = currentLease(room, path);
+    const relPath = toArtifactPath(room.dir, resolveArtifact(room.dir, path));
+    const actorId = ensureCliHuman(room);
+    releaseLease(room, actorId, path);
+
+    const names = new Map(room.roster().map((m) => [m.id, m.name] as const));
+    const holderName = before ? (names.get(before.holder) ?? before.holder) : undefined;
+    sink.out(
+      holderName
+        ? `Released ${holderName}'s lease on ${relPath}.`
+        : `Released the lease on ${relPath}.`,
+    );
+    return 0;
+  } finally {
+    room.close();
+  }
+}
+
+const LEASE_HELP = `Usage: atrium lease <subcommand> [options]
+
+Subcommands:
+  list [dir]              every path currently under lease (same as "atrium leases")
+  release <path> [dir]    force a live lease off a path, whoever holds it
+
+Run "atrium lease <subcommand> --help" for details on any one.
+`;
+
+export function cmdLease(argv: string[], sink: Sink): number {
+  const [sub, ...rest] = argv;
+
+  if (sub === undefined || sub === "--help" || sub === "-h") {
+    sink.out(LEASE_HELP);
+    return 0;
+  }
+
+  switch (sub) {
+    case "list":
+      return cmdLeases(rest, sink);
+    case "release":
+      return cmdLeaseRelease(rest, sink);
+    default:
+      sink.err(`Unknown "atrium lease" subcommand "${sub}". Run "atrium lease --help" for the list.`);
+      return 2;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // task — the human's hands on the board
 // ---------------------------------------------------------------------------
 //
@@ -1754,6 +1881,7 @@ Commands:
   gc [dir]              remove stored content no log entry points at
   prune [dir]           drop the content of old artifact versions (destructive)
   leases [dir]          every path currently under lease: holder, acquired, expires, time left
+  lease <subcommand>    list (same as "leases") or force-release an artifact lease
   serve [dir]           serve the room to an MCP client over stdin/stdout
   watch [dir]           a read-only web view of the room, live in a browser
   task <subcommand>     create, inspect, and administer tasks — see "atrium task --help"
@@ -1819,6 +1947,8 @@ function dispatch(argv: string[], sink: Sink): number {
       return cmdPrune(rest, sink);
     case "leases":
       return cmdLeases(rest, sink);
+    case "lease":
+      return cmdLease(rest, sink);
     case "task":
       return cmdTask(rest, sink);
     case "roster":
