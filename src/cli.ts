@@ -35,13 +35,18 @@ import {
   getContext,
   getTask,
   listLeases,
+  listPinned,
   listTasks,
   listVersions,
+  pinArtifact,
   pruneVersions,
   releaseTask,
+  resolveArtifact,
   restartTask,
   reviewTask,
   searchArtifacts,
+  toArtifactPath,
+  unpinArtifact,
 } from "./index.js";
 import { serveHttp } from "./http.js";
 import { serveStdio } from "./mcp.js";
@@ -513,13 +518,25 @@ export function cmdReplay(argv: string[], sink: Sink): number {
 // ---------------------------------------------------------------------------
 
 const CONTEXT_HELP = `Usage: atrium context [dir]
+       atrium context --pin <path> [dir]
+       atrium context --unpin <path> [dir]
 
-The shared brief (CONTEXT.md plus pinned artifacts) and its token total
-against the room's ceiling.
+With no flags, shows the shared brief (CONTEXT.md plus pinned artifacts)
+and its token total against the room's ceiling. --pin and --unpin curate
+that brief instead, acting as the CLI's own local human member (see
+"atrium task" for why that identity exists) — somebody running the room
+by hand needs a way to add and remove pins, not just look at them.
+
+A pin that would push the brief over contextTokenCeiling is refused, not
+silently dropped or summarized: ARCHITECTURE.md §6 puts that decision in
+front of a person, and the refusal names the ceiling, what the pin would
+have cost, and what is already pinned that could be unpinned instead.
 
 Options:
-  --json       print machine-readable JSON instead
-  --help, -h   show this help
+  --pin <path>    add an artifact to the shared brief
+  --unpin <path>  remove an artifact from the shared brief
+  --json          print machine-readable JSON instead (display mode only)
+  --help, -h      show this help
 `;
 
 export function cmdContext(argv: string[], sink: Sink): number {
@@ -528,6 +545,8 @@ export function cmdContext(argv: string[], sink: Sink): number {
     options: {
       help: { type: "boolean", short: "h" },
       json: { type: "boolean" },
+      pin: { type: "string" },
+      unpin: { type: "string" },
     },
     allowPositionals: true,
   });
@@ -535,10 +554,48 @@ export function cmdContext(argv: string[], sink: Sink): number {
     sink.out(CONTEXT_HELP);
     return 0;
   }
+  if (values.pin !== undefined && values.unpin !== undefined) {
+    sink.err("Choose either --pin or --unpin, not both.");
+    return 2;
+  }
 
   const dir = positionals[0] ?? process.cwd();
   const room = openRoom(dir);
   try {
+    if (values.pin !== undefined) {
+      if (!values.pin.trim()) {
+        sink.err('--pin needs a path, e.g. "atrium context --pin notes.md".');
+        return 2;
+      }
+      const actorId = ensureCliHuman(room);
+      const relPath = toArtifactPath(room.dir, resolveArtifact(room.dir, values.pin));
+      const already = listPinned(room).includes(relPath);
+      pinArtifact(room, actorId, values.pin);
+      sink.out(
+        already
+          ? `${relPath} is already pinned; nothing changed.`
+          : `Pinned ${relPath}.`,
+      );
+      return 0;
+    }
+
+    if (values.unpin !== undefined) {
+      if (!values.unpin.trim()) {
+        sink.err('--unpin needs a path, e.g. "atrium context --unpin notes.md".');
+        return 2;
+      }
+      const actorId = ensureCliHuman(room);
+      const relPath = toArtifactPath(room.dir, resolveArtifact(room.dir, values.unpin));
+      const wasPinned = listPinned(room).includes(relPath);
+      unpinArtifact(room, actorId, values.unpin);
+      sink.out(
+        wasPinned
+          ? `Unpinned ${relPath}.`
+          : `${relPath} was not pinned; nothing changed.`,
+      );
+      return 0;
+    }
+
     const context = getContext(room);
     if (values.json) {
       sink.out(JSON.stringify(context, null, 2));
@@ -1111,7 +1168,10 @@ export function cmdLeases(argv: string[], sink: Sink): number {
 // running the room," but until now the CLI could only look at a room, never
 // act on it. These five subcommands are that missing hand: putting a task on
 // the board, giving a verdict, forcing a stuck claim back, and restarting a
-// task that froze after too many rejections.
+// task that froze after too many rejections. `atrium context --pin/--unpin`,
+// defined above alongside the rest of `cmdContext`, needs the same identity
+// for the same reason and reuses `ensureCliHuman` rather than inventing a
+// second one.
 //
 // Every one of them needs a member id to act as. Two designs were on the
 // table:
@@ -1640,7 +1700,7 @@ Commands:
   log [dir]             what has happened, as readable lines
   invite [dir]          add a member and print their session token
   replay <seq> [dir]    the board as it looked at that point in the log
-  context [dir]         the shared brief and its token total against the ceiling
+  context [dir]         the shared brief and its token total; --pin/--unpin to curate it
   search <query> [dir]  full-text search over the room's artifacts
   cost [dir]            per-member and room spend totals against the caps
   history <path> [dir]  every version an artifact has had

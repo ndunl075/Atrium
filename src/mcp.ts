@@ -27,10 +27,11 @@ import {
   releaseLease,
 } from "./leases.js";
 import { claimTask, createTask, getTask, listTasks } from "./board.js";
-import { describeHistory, getContext, pinArtifact } from "./context.js";
+import { describeHistory, getContext, listPinned, pinArtifact, unpinArtifact } from "./context.js";
 import { costSummary, reportCost } from "./cost.js";
 import { isAtriumError } from "./errors.js";
 import { readArtifact, writeArtifact } from "./artifacts.js";
+import { resolveArtifact, toArtifactPath } from "./paths.js";
 import { reviewTask, submitTask } from "./acceptance.js";
 import { Room } from "./room.js";
 import { searchArtifacts } from "./search.js";
@@ -259,9 +260,25 @@ export class RoomServer {
         return { leases };
       }
 
-      case "pin_artifact":
-        pinArtifact(this.room, this.requireMember().id, str(args, "path"));
-        return { pinned: str(args, "path"), context: getContext(this.room) };
+      case "pin_artifact": {
+        const path = str(args, "path");
+        // Pinning twice is a no-op in context.ts, and silently reporting
+        // success either way would hide that from an agent that assumed its
+        // call was the reason the file showed up in the brief. `changed`
+        // says plainly whether this call did anything.
+        const before = listPinned(this.room);
+        pinArtifact(this.room, this.requireMember().id, path);
+        const relPath = toArtifactPath(this.room.dir, resolveArtifact(this.room.dir, path));
+        return { pinned: path, changed: !before.includes(relPath), context: getContext(this.room) };
+      }
+
+      case "unpin_artifact": {
+        const path = str(args, "path");
+        const before = listPinned(this.room);
+        unpinArtifact(this.room, this.requireMember().id, path);
+        const relPath = toArtifactPath(this.room.dir, resolveArtifact(this.room.dir, path));
+        return { unpinned: path, changed: before.includes(relPath), context: getContext(this.room) };
+      }
 
       case "submit_task":
         return await submitTask(
@@ -684,7 +701,17 @@ const TOOLS: ToolDefinition[] = [
   {
     name: "pin_artifact",
     description:
-      "Add a file to the room's shared brief, so every member sees it. Refused if it would push the brief over its token ceiling.",
+      "Add a file to the room's shared brief, so every member sees it. Refused if it would push the brief over its token ceiling — the error names the ceiling, what this file would have cost, and what is already pinned, so you can decide what to unpin instead of guessing. Pinning something already pinned succeeds with changed:false rather than erroring.",
+    inputSchema: {
+      type: "object",
+      properties: { path: { type: "string" } },
+      required: ["path"],
+    },
+  },
+  {
+    name: "unpin_artifact",
+    description:
+      "Remove a file from the room's shared brief. This is the only way to make room under the ceiling short of raising it, since Tier 1 overflow is rejected rather than evicted automatically (ARCHITECTURE.md §6). Unpinning something that was never pinned succeeds with changed:false rather than erroring.",
     inputSchema: {
       type: "object",
       properties: { path: { type: "string" } },

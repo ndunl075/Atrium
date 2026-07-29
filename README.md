@@ -155,7 +155,7 @@ rejects it.
 
 ## What a room looks like from a client
 
-Eighteen tools, and the ones that matter are `join`, `list_tasks`, `claim_task`,
+Nineteen tools, and the ones that matter are `join`, `list_tasks`, `claim_task`,
 `read_artifact`, `write_artifact`, `submit_task`, `review_task`. There's also
 `list_members`, so an agent can see who else is in the room and what each one
 says it's good for — self-reported on join, same as everywhere else this shows
