@@ -228,10 +228,16 @@ export interface EventMap {
 
   "lease.acquired": { path: string; memberId: MemberId; expiresAt: string };
   "lease.renewed": { path: string; memberId: MemberId; expiresAt: string };
+  /**
+   * `memberId` is always the member who *held* the lease, not necessarily
+   * whoever caused the release — those differ exactly when `reason` is
+   * `"forced"`, so `event.actor` is where a human administrator taking
+   * someone else's lease away shows up.
+   */
   "lease.released": {
     path: string;
     memberId: MemberId;
-    reason: "voluntary" | "expired";
+    reason: "voluntary" | "expired" | "forced";
   };
 
   "context.pinned": { path: string; memberId: MemberId };
