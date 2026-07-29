@@ -30,7 +30,7 @@ import { claimTask, createTask, getTask, listTasks } from "./board.js";
 import { describeHistory, getContext, listPinned, pinArtifact, unpinArtifact } from "./context.js";
 import { costSummary, reportCost } from "./cost.js";
 import { InvalidError, isAtriumError } from "./errors.js";
-import { readArtifact, writeArtifact } from "./artifacts.js";
+import { listArtifacts, listDeletedArtifacts, readArtifact, writeArtifact } from "./artifacts.js";
 import { resolveArtifact, toArtifactPath } from "./paths.js";
 import { reviewTask, submitTask } from "./acceptance.js";
 import { Room } from "./room.js";
@@ -173,6 +173,17 @@ export class RoomServer {
         return searchArtifacts(this.room, str(args, "query"), {
           limit: num(args, "limit", 20),
         });
+
+      case "list_artifacts": {
+        // A separate `deleted` list, present only when asked for, rather than
+        // a flag on each entry: that way a caller can never mix up a live
+        // artifact with a tombstone by missing a field, only by reading the
+        // wrong array.
+        const artifacts = listArtifacts(this.room);
+        return Boolean(args["include_deleted"])
+          ? { artifacts, deleted: listDeletedArtifacts(this.room) }
+          : { artifacts };
+      }
 
       case "list_tasks":
         return listTasks(this.room, {
@@ -668,6 +679,21 @@ const TOOLS: ToolDefinition[] = [
         limit: { type: "number", description: "Default 20." },
       },
       required: ["query"],
+    },
+  },
+  {
+    name: "list_artifacts",
+    description:
+      "Every path this room currently has: size, the log position it was last written at, and who wrote it. This is how a joining agent finds out what work already exists without already knowing a word to search for — search_artifacts only finds a file if you can guess something inside it, this just lists what is here, so call it before search_artifacts, not instead of it. Folded from the log, not read off disk: it describes what the room knows it produced, so a file dropped into the working directory by hand, without going through write_artifact, will never show up here. Pass include_deleted to also get paths that were written and later deleted, as a separate `deleted` list — a tombstone still has real history (read_artifact's seq argument can still read it, and atrium history/atrium diff still show it) but it is never mixed into the live list above.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        include_deleted: {
+          type: "boolean",
+          description:
+            "Also return paths that were written and then deleted, as a separate `deleted` array. Default false.",
+        },
+      },
     },
   },
   {

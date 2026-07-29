@@ -55,10 +55,12 @@ export {
   writeArtifact,
   deleteArtifact,
   listArtifacts,
+  listDeletedArtifacts,
   artifactInfo,
   type ArtifactRead,
   type ArtifactReadBytes,
   type WriteOptions,
+  type DeletedArtifact,
 } from "./artifacts.js";
 export {
   getContext,

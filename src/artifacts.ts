@@ -16,6 +16,16 @@
  * it produced, which is the thing other agents and the task board reason
  * about, not whatever happens to be sitting on disk (a stray file dropped in
  * by hand is not, in this model, an artifact).
+ *
+ * `listArtifacts` only returns paths that currently exist. A path that was
+ * written and then deleted still has a real version history behind it —
+ * `atrium history` and `atrium diff` still show it, and `read_artifact`'s
+ * `seq` argument can still read its old content back — but it is not a thing
+ * the room currently has, so it does not belong in a list of "what artifacts
+ * are here now." `listDeletedArtifacts` is the separate, opt-in way to see
+ * those paths: it is never merged into `listArtifacts`'s result, so a caller
+ * can always tell a live artifact from a tombstone by which list it came
+ * from rather than by inspecting a flag on each entry.
  */
 
 import {
@@ -63,10 +73,16 @@ export interface WriteOptions {
  * exists, plus the log position of whichever came last, a write or a delete.
  * Keeping both together is what lets a stale write be caught even when the
  * thing that happened since was a deletion rather than another write.
+ *
+ * `deletedBy`/`deletedAt` are set instead of `info` when the last event was a
+ * deletion. `listDeletedArtifacts` is the only reader of those two fields;
+ * everywhere else in this file only cares whether `info` is present.
  */
 interface ArtifactState {
   info?: ArtifactInfo;
   seq: number;
+  deletedBy?: MemberId;
+  deletedAt?: string;
 }
 
 function foldArtifacts(events: AnyEvent[]): Map<string, ArtifactState> {
@@ -90,7 +106,11 @@ function foldArtifacts(events: AnyEvent[]): Map<string, ArtifactState> {
       }
 
       case "artifact.deleted": {
-        artifacts.set(event.data.path, { seq: event.seq });
+        artifacts.set(event.data.path, {
+          seq: event.seq,
+          deletedBy: event.data.memberId,
+          deletedAt: event.ts,
+        });
         break;
       }
 
@@ -129,6 +149,40 @@ export function listArtifacts(room: Room): ArtifactInfo[] {
     if (state.info) infos.push(state.info);
   }
   return infos;
+}
+
+/** A path the room once wrote and has since deleted — a tombstone. */
+export interface DeletedArtifact {
+  /** Path relative to the room's working directory, using forward slashes. */
+  path: string;
+  /** Log position of the deletion itself. */
+  seq: number;
+  deletedBy: MemberId;
+  deletedAt: string;
+}
+
+/**
+ * Every path the room once wrote and has since deleted — the tombstones
+ * `listArtifacts` leaves out on purpose (see the module doc above). A path
+ * here still has a real version history behind it; this is only for finding
+ * the *name* of a path you don't already know was ever written, when you
+ * specifically want the deleted ones rather than what currently exists.
+ */
+export function listDeletedArtifacts(room: Room): DeletedArtifact[] {
+  const deleted: DeletedArtifact[] = [];
+  for (const [path, state] of foldArtifacts(readArtifactEvents(room))) {
+    if (state.info) continue; // still exists; not a tombstone
+    // Every entry in the fold came from a write or a delete event, so the
+    // absence of `info` here always means the last one was a delete — there
+    // is no third case where deletedBy/deletedAt would be missing.
+    deleted.push({
+      path,
+      seq: state.seq,
+      deletedBy: state.deletedBy!,
+      deletedAt: state.deletedAt!,
+    });
+  }
+  return deleted;
 }
 
 /**

@@ -9,6 +9,7 @@ import {
   artifactInfo,
   deleteArtifact,
   listArtifacts,
+  listDeletedArtifacts,
   readArtifact,
   readArtifactBytes,
   writeArtifact,
@@ -256,6 +257,50 @@ describe("artifactInfo / listArtifacts", () => {
     deleteArtifact(room, a.id, "one.md");
 
     expect(listArtifacts(room).map((i) => i.path)).toEqual(["two.md"]);
+  });
+});
+
+describe("listDeletedArtifacts", () => {
+  it("keeps a deleted path out of listArtifacts, and reports who deleted it and when instead", () => {
+    const room = tempRoom();
+    const a = worker(room, "a");
+    acquireLease(room, a.id, "one.md");
+    writeArtifact(room, a.id, "one.md", "1");
+    acquireLease(room, a.id, "two.md");
+    writeArtifact(room, a.id, "two.md", "2");
+
+    deleteArtifact(room, a.id, "one.md");
+
+    // The two lists never overlap: a live artifact and a tombstone are never
+    // the same entry seen from two angles.
+    expect(listArtifacts(room).map((i) => i.path)).toEqual(["two.md"]);
+
+    const deleted = listDeletedArtifacts(room);
+    expect(deleted).toHaveLength(1);
+    expect(deleted[0]?.path).toBe("one.md");
+    expect(deleted[0]?.deletedBy).toBe(a.id);
+    expect(deleted[0]?.deletedAt).toBeTruthy();
+  });
+
+  it("is empty when nothing has ever been deleted", () => {
+    const room = tempRoom();
+    const a = worker(room, "a");
+    acquireLease(room, a.id, "draft.md");
+    writeArtifact(room, a.id, "draft.md", "hi");
+
+    expect(listDeletedArtifacts(room)).toEqual([]);
+  });
+
+  it("re-lists a path once it is written again after being deleted", () => {
+    const room = tempRoom();
+    const a = worker(room, "a");
+    acquireLease(room, a.id, "draft.md");
+    writeArtifact(room, a.id, "draft.md", "v1");
+    deleteArtifact(room, a.id, "draft.md");
+    writeArtifact(room, a.id, "draft.md", "v2");
+
+    expect(listArtifacts(room).map((i) => i.path)).toEqual(["draft.md"]);
+    expect(listDeletedArtifacts(room)).toEqual([]);
   });
 });
 
