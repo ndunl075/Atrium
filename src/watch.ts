@@ -41,7 +41,13 @@ import type { AddressInfo } from "node:net";
 
 import { listArtifacts } from "./artifacts.js";
 import { listTasks } from "./board.js";
-import { describeHistory, getContext, type HistoryLine } from "./context.js";
+import {
+  describeHistory,
+  getContext,
+  type HistoryLine,
+  type PinnedArtifact,
+  type RoomContext,
+} from "./context.js";
 import { isAtriumError } from "./errors.js";
 import type { Room } from "./room.js";
 import { diffArtifact, listVersions } from "./snapshots.js";
@@ -218,6 +224,11 @@ tr:last-child td { border-bottom: none; }
 #log .line { color: var(--ink); font-family: var(--sans); font-size: 13.5px; }
 @keyframes fresh { from { background: var(--accent-fill); } to { background: transparent; } }
 
+pre.brief {
+  margin: 0; font-family: var(--mono); font-size: 13px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word; overflow-x: auto;
+}
+
 pre.patch { margin: 0; font-family: var(--mono); font-size: 12.5px; line-height: 1.5; overflow-x: auto; }
 pre.patch .l { display: block; padding: 0 10px; white-space: pre; }
 pre.patch .add { color: var(--add-ink); background: var(--add-fill); box-shadow: inset 2px 0 0 var(--add-rule); }
@@ -259,6 +270,91 @@ function page(title: string, body: string, script = ""): string {
 <title>${escapeHtml(title)}</title>
 <style>${STYLES}</style>
 </head><body><div class="wrap">${body}</div>${script ? `<script>${script}</script>` : ""}</body></html>`;
+}
+
+/**
+ * The token total against the ceiling, rendered so that being over it reads
+ * as unmistakably bad rather than as a slightly larger number.
+ *
+ * `getContext` deliberately reports the real total even past the ceiling —
+ * `CONTEXT.md` is a plain file a human can hand-edit past the limit, and
+ * clamping the number here would just move that surprise somewhere harder to
+ * debug (see the doc comment on `getContext` in context.ts). So this never
+ * clamps either; it only chooses a colour. Reusing the task-state palette
+ * (`accepted` green, `rejected` red) rather than inventing a third state
+ * colour for "over budget" keeps the vocabulary the rest of the page already
+ * trained a reader on.
+ */
+function renderContextBudget(context: RoomContext): string {
+  const overBy = context.tokens - context.ceiling;
+  if (overBy > 0) {
+    return `<span class="pill rejected">${context.tokens} / ${context.ceiling} tokens · ${overBy} over ceiling</span>`;
+  }
+  return `<span class="pill accepted">${context.tokens} / ${context.ceiling} tokens</span>`;
+}
+
+/**
+ * One pinned artifact: its path, a link to the diff view if it has more than
+ * one version to compare, and its full content — because the content is the
+ * actual thing every joining agent was handed, not just its name. Path and
+ * content both come from a file somebody in the room wrote, so both are
+ * escaped the same as everything else on this page.
+ */
+function renderPinnedArtifact(room: Room, pinned: PinnedArtifact): string {
+  const versions = listVersions(room, pinned.path).filter((v) => v.kind === "written");
+  const link =
+    versions.length >= 2
+      ? `<a href="/diff?path=${q(pinned.path)}">view diff</a>`
+      : `<span class="empty">one version</span>`;
+
+  return `<div class="card" style="margin-bottom:12px">
+    <div class="mono" style="margin-bottom:8px">${escapeHtml(pinned.path)} · ${link}</div>
+    <pre class="brief">${escapeHtml(pinned.content)}</pre>
+  </div>`;
+}
+
+/**
+ * Tier 1, in full: `CONTEXT.md` plus every pinned artifact, which
+ * ARCHITECTURE.md §4 calls "the brief" — the one thing injected into every
+ * agent that joins the room. Nothing about the room is more worth showing a
+ * human watching it work, and until now this page did not show it at all.
+ *
+ * `CONTEXT.md` is Markdown on disk, and this codebase has no Markdown library
+ * and a zero-dependency budget that forbids adding one. A tiny hand-rolled
+ * subset (headings and paragraphs, say) was the other option considered, and
+ * it was rejected: real briefs will contain the Markdown such a subset does
+ * not cover — lists, links, code fences, emphasis — and rendering those
+ * silently wrong is exactly the quiet wrongness this codebase refuses to
+ * ship. So the brief is shown faithfully instead: every character the file
+ * holds, verbatim, as preformatted text in the monospace style already used
+ * for positional content elsewhere on this page. A literal `# Heading` shows
+ * up as the four characters `# Heading` rather than a styled heading. That is
+ * a real readability cost, paid deliberately in exchange for never asserting
+ * a structure the text does not actually have.
+ */
+function renderBrief(room: Room, context: RoomContext): string {
+  // An empty brief is the ordinary state of a room nobody has curated yet,
+  // not an error — so it gets a sentence saying that, the same way the board
+  // and roster explain an empty state rather than drawing an empty box.
+  const briefBody =
+    context.brief.trim() === ""
+      ? `<p class="empty">CONTEXT.md is empty. That's normal for a fresh room — nobody has written a brief for it yet.</p>`
+      : `<pre class="brief">${escapeHtml(context.brief)}</pre>`;
+
+  const pinnedBody =
+    context.pinned.length === 0
+      ? `<p class="empty">Nothing is pinned.</p>`
+      : context.pinned.map((p) => renderPinnedArtifact(room, p)).join("");
+
+  return `
+<div class="stategroup">
+  <h3>CONTEXT.md</h3>
+  ${briefBody}
+</div>
+<div class="stategroup">
+  <h3>Pinned artifacts</h3>
+  ${pinnedBody}
+</div>`;
 }
 
 const STATE_ORDER: TaskState[] = [
@@ -430,6 +526,7 @@ function renderRoomPage(room: Room): string {
   </div>
 </header>
 ${halted}
+<section><h2>Brief ${renderContextBudget(context)}</h2>${renderBrief(room, context)}</section>
 <section><h2>Board</h2>${renderBoard(tasks, names)}</section>
 <section><h2>Members</h2>${renderRoster(room)}</section>
 <section><h2>Artifacts</h2>${renderArtifacts(room)}</section>
