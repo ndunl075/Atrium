@@ -45,7 +45,7 @@ import {
 } from "./index.js";
 import { serveHttp } from "./http.js";
 import { serveStdio } from "./mcp.js";
-import type { Acceptance, MemberId, MemberRole, Task, TaskState, Verdict } from "./index.js";
+import type { Acceptance, Member, MemberId, MemberRole, Task, TaskState, Verdict } from "./index.js";
 
 export interface Sink {
   out(line: string): void;
@@ -1533,6 +1533,99 @@ export function cmdTask(argv: string[], sink: Sink): number {
 }
 
 // ---------------------------------------------------------------------------
+// roster
+// ---------------------------------------------------------------------------
+//
+// ARCHITECTURE.md §3.2: agents self-describe capabilities on join via a short
+// manifest (free text) plus tags. Nothing has ever shown that back — `atrium
+// open` prints name/role/active and stops there, and there was no MCP tool at
+// all. That is a real gap against §2's blackboard model, where specialists
+// are supposed to observe each other's contributions, not be told about them
+// by an orchestrator: knowing who else is in the room, and what they say they
+// are good for, is part of that observing.
+
+const ROSTER_HELP = `Usage: atrium roster [dir]
+
+Every member who has ever joined this room: name, role, whether they are
+still active, when they joined, their tags, and the manifest they gave on
+join.
+
+A manifest is self-reported free text, nothing more. ARCHITECTURE.md §3.2
+deliberately has no capability schema behind it, so this is what a member
+says about itself, not a verified claim about what it can actually do.
+
+Options:
+  --active     only members who have not left
+  --json       print machine-readable JSON instead
+  --help, -h   show this help
+`;
+
+/**
+ * A manifest is prose, sometimes a full sentence or two, so it does not fit
+ * as a table column: forced into `table()` it would either get truncated or
+ * force every other column to the width of the longest one. Each member gets
+ * its own block instead — identity on one line, tags and manifest indented
+ * under it — so a one-word manifest and a two-sentence one both read cleanly.
+ */
+function renderRoster(roster: Member[]): string[] {
+  const lines: string[] = [];
+  roster.forEach((member, i) => {
+    lines.push(`  ${bold(member.name)} — ${member.role} — ${member.active ? "active" : "left"}`);
+    lines.push(`    joined ${member.joinedAt}`);
+    lines.push(`    tags: ${member.tags.length > 0 ? member.tags.join(", ") : dim("(none)")}`);
+    lines.push(
+      member.manifest.trim() === ""
+        ? `    ${dim("(no manifest given)")}`
+        : `    "${member.manifest}"`,
+    );
+    if (i < roster.length - 1) lines.push("");
+  });
+  return lines;
+}
+
+export function cmdRoster(argv: string[], sink: Sink): number {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: {
+      help: { type: "boolean", short: "h" },
+      json: { type: "boolean" },
+      active: { type: "boolean" },
+    },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(ROSTER_HELP);
+    return 0;
+  }
+
+  const dir = positionals[0] ?? process.cwd();
+  const room = openRoom(dir);
+  try {
+    const roster = room.roster().filter((m) => !values.active || m.active);
+
+    if (values.json) {
+      sink.out(JSON.stringify(roster, null, 2));
+      return 0;
+    }
+
+    if (roster.length === 0) {
+      sink.out(dim(values.active ? "No active members." : "Nobody has joined this room yet."));
+      return 0;
+    }
+
+    sink.out(bold(`Roster (${roster.length})`));
+    sink.out(
+      dim("  Manifests are self-reported — what a member says it's good for, not a verified capability (ARCHITECTURE.md §3.2)."),
+    );
+    sink.out("");
+    for (const line of renderRoster(roster)) sink.out(line);
+    return 0;
+  } finally {
+    room.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch and entry point
 // ---------------------------------------------------------------------------
 
@@ -1557,6 +1650,7 @@ Commands:
   leases [dir]          every path currently under lease: holder, acquired, expires, time left
   serve [dir]           serve the room to an MCP client over stdin/stdout
   task <subcommand>     create, inspect, and administer tasks — see "atrium task --help"
+  roster [dir]          every member who has joined, with tags and self-reported manifest
 
 Run "atrium <command> --help" for details on any command.
 
@@ -1620,6 +1714,8 @@ function dispatch(argv: string[], sink: Sink): number {
       return cmdLeases(rest, sink);
     case "task":
       return cmdTask(rest, sink);
+    case "roster":
+      return cmdRoster(rest, sink);
     default:
       sink.err(`Unknown command "${command}". Run "atrium --help" for the list of commands.`);
       return 2;
