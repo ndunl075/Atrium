@@ -23,6 +23,7 @@ import { createInterface } from "node:readline";
 import {
   acquireLease,
   currentLease,
+  listLeases,
   releaseLease,
 } from "./leases.js";
 import { claimTask, createTask, getTask, listTasks } from "./board.js";
@@ -243,6 +244,20 @@ export class RoomServer {
       case "release_artifact":
         releaseLease(this.room, this.requireMember().id, str(args, "path"));
         return { released: str(args, "path") };
+
+      case "list_leases": {
+        // Checking one path here is the whole point: a worker about to call
+        // write_artifact can find out first whether it will be refused,
+        // instead of finding out by eating the LeaseError. currentLease
+        // already applies the same expiry rule as listLeases, so a lapsed
+        // lease reads as free here too, not as still held.
+        const path = args["path"];
+        const leases =
+          typeof path === "string" && path.trim() !== ""
+            ? [currentLease(this.room, path)].filter((l): l is NonNullable<typeof l> => l !== undefined)
+            : listLeases(this.room);
+        return { leases };
+      }
 
       case "pin_artifact":
         pinArtifact(this.room, this.requireMember().id, str(args, "path"));
@@ -642,6 +657,20 @@ const TOOLS: ToolDefinition[] = [
       type: "object",
       properties: { path: { type: "string" } },
       required: ["path"],
+    },
+  },
+  {
+    name: "list_leases",
+    description:
+      "Check who holds a lease before you call write_artifact, instead of finding out by getting refused. Pass path to check just that one path, or omit it to see every path currently leased in the room. A lease whose time has passed is left out — it no longer blocks a write, even though the log still shows it was once acquired.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Check only this path. Omit to list every currently-leased path.",
+        },
+      },
     },
   },
   {

@@ -18,6 +18,7 @@ import {
   cmdHistory,
   cmdInit,
   cmdInvite,
+  cmdLeases,
   cmdLog,
   cmdPrune,
   cmdOpen,
@@ -623,6 +624,69 @@ describe("prune", () => {
     const s = sink();
     expect(cmdPrune([dir, "--keep", "0"], s)).not.toBe(0);
     expect(s.errLines.join("\n")).toMatch(/1 or more/);
+  });
+});
+
+describe("leases", () => {
+  it("lists a held lease with the holder's name, not just their id", () => {
+    const { dir, room } = tempRoom({ config: { leaseSeconds: 300 } });
+    const scout = room.join({ name: "scout", role: "worker" }).member;
+    acquireLease(room, scout.id, "draft.md");
+
+    const s = sink();
+    const code = cmdLeases([dir], s);
+    const text = s.outLines.join("\n");
+
+    expect(code).toBe(0);
+    expect(text).toContain("draft.md");
+    expect(text).toContain("scout");
+    expect(text).toMatch(/left/);
+  });
+
+  it("--json resolves the holder's name alongside their id", () => {
+    const { dir, room } = tempRoom({ config: { leaseSeconds: 300 } });
+    const scout = room.join({ name: "scout", role: "worker" }).member;
+    acquireLease(room, scout.id, "draft.md");
+
+    const s = sink();
+    const code = cmdLeases(["--json", dir], s);
+    const leases = JSON.parse(s.outLines.join("\n"));
+
+    expect(code).toBe(0);
+    expect(leases).toHaveLength(1);
+    expect(leases[0].path).toBe("draft.md");
+    expect(leases[0].holder).toBe(scout.id);
+    expect(leases[0].holderName).toBe("scout");
+  });
+
+  it("says plainly that nothing is leased, rather than printing an empty table", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+    const code = cmdLeases([dir], s);
+
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/no paths are currently leased/i);
+  });
+
+  it("does not report a lapsed lease as held", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+    const { dir, room } = tempRoom({ config: { leaseSeconds: 60 } });
+    const scout = room.join({ name: "scout", role: "worker" }).member;
+    acquireLease(room, scout.id, "draft.md");
+
+    // Well past the 60-second lease, but the lease.acquired event is still
+    // sitting in the log — this is exactly the case foldLeases exists to get
+    // right, and the CLI must not paper over it.
+    vi.setSystemTime(new Date("2026-01-01T00:10:00.000Z"));
+
+    const s = sink();
+    const code = cmdLeases(["--json", dir], s);
+    const leases = JSON.parse(s.outLines.join("\n"));
+
+    expect(code).toBe(0);
+    expect(leases).toEqual([]);
   });
 });
 

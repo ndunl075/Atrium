@@ -34,6 +34,7 @@ import {
   gcBlobs,
   getContext,
   getTask,
+  listLeases,
   listTasks,
   listVersions,
   pruneVersions,
@@ -1005,6 +1006,104 @@ export function cmdPrune(argv: string[], sink: Sink): number {
 }
 
 // ---------------------------------------------------------------------------
+// leases
+// ---------------------------------------------------------------------------
+//
+// ARCHITECTURE.md §6 makes a lease the thing that stops two agents from
+// scribbling over the same path, but until now nothing showed who was
+// holding what — `listLeases` had no caller anywhere in the codebase. A room
+// where you cannot see who holds a path is hard to debug when a write fails
+// with "leased by someone else" and you want to know whether that is still
+// true or just hasn't lapsed yet in the log.
+
+/** Whole seconds remaining until `expiresAt`, never negative. `listLeases`
+ * already drops anything whose time has passed, so this is cosmetic — it
+ * just turns a timestamp into something a human doesn't have to subtract by
+ * hand — but it is written defensively anyway rather than assuming the fold
+ * upstream can never change. */
+function secondsLeft(expiresAt: string): number {
+  return Math.max(0, Math.round((Date.parse(expiresAt) - Date.now()) / 1000));
+}
+
+function formatRemaining(expiresAt: string): string {
+  const total = secondsLeft(expiresAt);
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return minutes > 0 ? `${minutes}m ${seconds}s left` : `${seconds}s left`;
+}
+
+const LEASES_HELP = `Usage: atrium leases [dir]
+
+Every path currently under lease: who holds it, when it was acquired, when
+it expires, and how long is left. This is folded through the same
+foldLeases rule everything else in the room uses, so a lease whose expiry
+has passed is never shown here as held — it is not live even though its
+lease.acquired event is still sitting in the log, and reporting it as held
+would just be wrong.
+
+Options:
+  --json       print machine-readable JSON instead
+  --help, -h   show this help
+`;
+
+export function cmdLeases(argv: string[], sink: Sink): number {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: {
+      help: { type: "boolean", short: "h" },
+      json: { type: "boolean" },
+    },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(LEASES_HELP);
+    return 0;
+  }
+
+  const dir = positionals[0] ?? process.cwd();
+  const room = openRoom(dir);
+  try {
+    const leases = listLeases(room);
+    // Resolved the same way context.ts's describeHistory resolves actors: a
+    // holder is a MemberId, and a MemberId means nothing to a human reading
+    // this at a terminal without looking the roster up themselves.
+    const names = new Map(room.roster().map((m) => [m.id, m.name] as const));
+    const holderName = (id: string): string => names.get(id) ?? id;
+
+    if (values.json) {
+      sink.out(
+        JSON.stringify(
+          leases.map((lease) => ({ ...lease, holderName: holderName(lease.holder) })),
+          null,
+          2,
+        ),
+      );
+      return 0;
+    }
+
+    if (leases.length === 0) {
+      sink.out(dim("No paths are currently leased."));
+      return 0;
+    }
+
+    for (const row of table(
+      leases.map((lease) => [
+        lease.path,
+        holderName(lease.holder),
+        lease.acquiredAt,
+        lease.expiresAt,
+        formatRemaining(lease.expiresAt),
+      ]),
+    )) {
+      sink.out(row);
+    }
+    return 0;
+  } finally {
+    room.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // task — the human's hands on the board
 // ---------------------------------------------------------------------------
 //
@@ -1455,6 +1554,7 @@ Commands:
   diff <path> [dir]     a unified diff between two versions of an artifact
   gc [dir]              remove stored content no log entry points at
   prune [dir]           drop the content of old artifact versions (destructive)
+  leases [dir]          every path currently under lease: holder, acquired, expires, time left
   serve [dir]           serve the room to an MCP client over stdin/stdout
   task <subcommand>     create, inspect, and administer tasks — see "atrium task --help"
 
@@ -1516,6 +1616,8 @@ function dispatch(argv: string[], sink: Sink): number {
       return cmdGc(rest, sink);
     case "prune":
       return cmdPrune(rest, sink);
+    case "leases":
+      return cmdLeases(rest, sink);
     case "task":
       return cmdTask(rest, sink);
     default:
