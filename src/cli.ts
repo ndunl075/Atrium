@@ -50,6 +50,7 @@ import {
   searchArtifacts,
   toArtifactPath,
   unpinArtifact,
+  verifyRoom,
 } from "./index.js";
 import { serveHttp } from "./http.js";
 import { serveWatch } from "./watch.js";
@@ -1318,6 +1319,90 @@ export function cmdPrune(argv: string[], sink: Sink): number {
 }
 
 // ---------------------------------------------------------------------------
+// verify
+// ---------------------------------------------------------------------------
+//
+// gc and prune can both remove bytes from a room; until now nothing could
+// confirm afterwards that what is left still hangs together with what the
+// log says should be there. The substance of this check lives in verify.ts —
+// this is the thin presenter over it, the same division cmdConfig keeps with
+// config.ts.
+
+const VERIFY_HELP = `Usage: atrium verify [dir]
+
+Checks that this room is internally consistent: every artifact.written
+event's hash either has a blob on disk or was named in a recorded
+artifact.pruned event; every stored blob's bytes still hash to the name
+it is filed under; the log's sequence numbers start at 1 with no gaps;
+room.json and tokens.json parse and hold the types they are supposed to.
+
+A version whose content was legitimately dropped by "atrium prune" is not
+damage and is not reported as any — that is the ordinary result of running
+prune, not evidence of a problem. An unreferenced blob is reported
+separately as reclaimable space (what "atrium gc" exists to free), not as
+damage either.
+
+Exit code is 0 for a healthy room, 1 for one with findings worth attention.
+
+Options:
+  --json       print machine-readable JSON instead
+  --help, -h   show this help
+`;
+
+export function cmdVerify(argv: string[], sink: Sink): number {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: {
+      help: { type: "boolean", short: "h" },
+      json: { type: "boolean" },
+    },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(VERIFY_HELP);
+    return 0;
+  }
+
+  const room = openRoom(positionals[0] ?? process.cwd());
+  try {
+    const report = verifyRoom(room);
+
+    if (values.json) {
+      sink.out(JSON.stringify(report, null, 2));
+      return report.healthy ? 0 : 1;
+    }
+
+    if (report.findings.length === 0) {
+      sink.out(`${room.config.name} is healthy: nothing to report.`);
+      return 0;
+    }
+
+    const bySeverity = (severity: "critical" | "warning" | "info") =>
+      report.findings.filter((f) => f.severity === severity);
+
+    for (const severity of ["critical", "warning", "info"] as const) {
+      const findings = bySeverity(severity);
+      if (findings.length === 0) continue;
+      sink.out(bold(`${severity.toUpperCase()} (${findings.length})`));
+      for (const finding of findings) sink.out(`  ${finding.message}`);
+      sink.out("");
+    }
+
+    sink.out(
+      report.healthy
+        ? dim(`${room.config.name} is healthy; the only findings above are informational.`)
+        : red(
+            `${room.config.name} has ${bySeverity("critical").length + bySeverity("warning").length} ` +
+              `finding(s) worth attention.`,
+          ),
+    );
+    return report.healthy ? 0 : 1;
+  } finally {
+    room.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // leases
 // ---------------------------------------------------------------------------
 //
@@ -2134,6 +2219,7 @@ Commands:
   diff <path> [dir]     a unified diff between two versions of an artifact
   gc [dir]              remove stored content no log entry points at
   prune [dir]           drop the content of old artifact versions (destructive)
+  verify [dir]          check the room is internally consistent
   leases [dir]          every path currently under lease: holder, acquired, expires, time left
   lease <subcommand>    list (same as "leases") or force-release an artifact lease
   serve [dir]           serve the room to an MCP client over stdin/stdout
@@ -2191,6 +2277,8 @@ function dispatch(argv: string[], sink: Sink): number {
       return cmdGc(rest, sink);
     case "prune":
       return cmdPrune(rest, sink);
+    case "verify":
+      return cmdVerify(rest, sink);
     case "leases":
       return cmdLeases(rest, sink);
     case "lease":
