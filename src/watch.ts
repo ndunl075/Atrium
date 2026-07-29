@@ -51,7 +51,7 @@ import {
 import { isAtriumError } from "./errors.js";
 import type { Room } from "./room.js";
 import { diffArtifact, listVersions } from "./snapshots.js";
-import type { MemberId, Task, TaskState } from "./types.js";
+import type { EventType, MemberId, Task, TaskState } from "./types.js";
 
 export interface ServeWatchOptions {
   /** Defaults to 127.0.0.1. Only change this deliberately. */
@@ -224,6 +224,19 @@ tr:last-child td { border-bottom: none; }
 #log .line { color: var(--ink); font-family: var(--sans); font-size: 13.5px; }
 @keyframes fresh { from { background: var(--accent-fill); } to { background: transparent; } }
 
+/* The same "something just changed" cue the newest log line gets, reused for
+   a board/roster/artifacts/brief region the instant the stream redraws it —
+   restrained to the one keyframe already in the vocabulary rather than a
+   second animation this page would then have to justify. */
+.flash { animation: fresh 1.1s ease-out; }
+
+/* A dropped stream means every folded region on the page stopped moving the
+   instant it disconnected, so it must stop *looking* current too — dimming
+   is the same warm-gray already used for "blocked", not a new colour. */
+body.stale #board, body.stale #roster, body.stale #artifacts, body.stale #brief {
+  opacity: 0.55;
+}
+
 pre.brief {
   margin: 0; font-family: var(--mono); font-size: 13px; line-height: 1.6;
   white-space: pre-wrap; word-break: break-word; overflow-x: auto;
@@ -288,9 +301,9 @@ function page(title: string, body: string, script = ""): string {
 function renderContextBudget(context: RoomContext): string {
   const overBy = context.tokens - context.ceiling;
   if (overBy > 0) {
-    return `<span class="pill rejected">${context.tokens} / ${context.ceiling} tokens · ${overBy} over ceiling</span>`;
+    return `<span id="ctx-budget" class="pill rejected">${context.tokens} / ${context.ceiling} tokens · ${overBy} over ceiling</span>`;
   }
-  return `<span class="pill accepted">${context.tokens} / ${context.ceiling} tokens</span>`;
+  return `<span id="ctx-budget" class="pill accepted">${context.tokens} / ${context.ceiling} tokens</span>`;
 }
 
 /**
@@ -466,12 +479,19 @@ function renderLogLine(line: HistoryLine): string {
 }
 
 /**
- * The client half of the live stream. Deliberately tiny: it opens an
- * EventSource, prepends each line it receives, and does nothing else. Anything
- * cleverer — reconnect backoff, replay reconciliation, virtual scrolling — is
- * complexity this page has not earned, and `EventSource` already reconnects on
- * its own. It reports the connection dropping rather than silently showing a
- * frozen log, because a stopped stream looks exactly like a quiet room.
+ * The client half of the live stream. It opens one EventSource and reads two
+ * kinds of thing off it: the unnamed `message` events, which are log lines,
+ * exactly as before; and a handful of *named* events — `board`, `roster`,
+ * `artifacts`, `brief`, `meta`, `halted` — each carrying a pre-rendered,
+ * pre-escaped HTML fragment for the one region of the page that a board-
+ * shaped event just changed. The client's job stays "dumb": drop the string
+ * into the element with that id. All the judgment about *whether* something
+ * board-shaped happened lives once, on the server, in `regionsTouchedBy`
+ * below — not duplicated here as a second opinion about which events matter.
+ *
+ * Reconnect backoff, diffing, virtual scrolling: still not this page's job,
+ * for the same reason as before — `EventSource` reconnects on its own, and
+ * anything cleverer is complexity this page has not earned.
  */
 function clientScript(fromSeq: number): string {
   return `
@@ -479,6 +499,26 @@ function clientScript(fromSeq: number): string {
   var log = document.getElementById("log");
   var status = document.getElementById("status");
   var src = new EventSource("/events?from=${fromSeq}");
+
+  function flash(el) {
+    if (!el) return;
+    el.classList.remove("flash");
+    void el.offsetWidth; // forces a reflow so the animation restarts
+    el.classList.add("flash");
+  }
+  function swap(id, html) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.innerHTML = html;
+    flash(el);
+  }
+
+  function setLive() {
+    status.textContent = "live";
+    status.className = "live";
+    document.body.classList.remove("stale");
+  }
+
   src.onmessage = function (e) {
     var d = JSON.parse(e.data);
     var li = document.createElement("li");
@@ -487,12 +527,36 @@ function clientScript(fromSeq: number): string {
     var ln = document.createElement("span"); ln.className = "line"; ln.textContent = d.line;
     li.appendChild(seq); li.appendChild(ts); li.appendChild(ln);
     log.insertBefore(li, log.firstChild);
-    status.textContent = "live";
-    status.className = "live";
+    setLive();
   };
+
+  src.addEventListener("meta", function (e) {
+    var d = JSON.parse(e.data);
+    ["members", "tasks", "tokens", "head"].forEach(function (key) {
+      if (d[key] === undefined) return;
+      var el = document.getElementById("hdr-" + key);
+      if (el) el.textContent = d[key];
+    });
+  });
+
+  src.addEventListener("board", function (e) { swap("board", JSON.parse(e.data)); });
+  src.addEventListener("roster", function (e) { swap("roster", JSON.parse(e.data)); });
+  src.addEventListener("artifacts", function (e) { swap("artifacts", JSON.parse(e.data)); });
+  src.addEventListener("brief", function (e) {
+    var d = JSON.parse(e.data);
+    var budget = document.getElementById("ctx-budget");
+    if (budget) budget.outerHTML = d.budget;
+    swap("brief", d.body);
+  });
+  src.addEventListener("halted", function (e) { swap("halted", JSON.parse(e.data)); });
+
   src.onerror = function () {
     status.textContent = "stream disconnected — reconnecting";
     status.className = "";
+    // The regions below stopped being told about anything the moment the
+    // stream dropped; they are frozen, not live, and must say so rather than
+    // keep looking like the rest of a page that is still moving.
+    document.body.classList.add("stale");
   };
 })();`;
 }
@@ -509,27 +573,23 @@ function renderRoomPage(room: Room): string {
     .slice()
     .reverse();
 
-  const halted = room.isHalted()
-    ? `<div class="note" style="margin-bottom:22px">This room has halted. It is still readable, but it will not accept further work.</div>`
-    : "";
-
   const body = `
 <header class="masthead">
   <h1>${escapeHtml(config.name)}</h1>
   <div class="meta">
     <span>${escapeHtml(config.id)}</span>
-    <span>${room.roster().length} member${room.roster().length === 1 ? "" : "s"}</span>
-    <span>${tasks.length} task${tasks.length === 1 ? "" : "s"}</span>
-    <span>${context.tokens}/${context.ceiling} context tokens</span>
-    <span>log at #${head}</span>
+    <span id="hdr-members">${room.roster().length} member${room.roster().length === 1 ? "" : "s"}</span>
+    <span id="hdr-tasks">${tasks.length} task${tasks.length === 1 ? "" : "s"}</span>
+    <span id="hdr-tokens">${context.tokens}/${context.ceiling} context tokens</span>
+    <span id="hdr-head">log at #${head}</span>
     <span id="status" class="live">live</span>
   </div>
 </header>
-${halted}
-<section><h2>Brief ${renderContextBudget(context)}</h2>${renderBrief(room, context)}</section>
-<section><h2>Board</h2>${renderBoard(tasks, names)}</section>
-<section><h2>Members</h2>${renderRoster(room)}</section>
-<section><h2>Artifacts</h2>${renderArtifacts(room)}</section>
+<div id="halted">${room.isHalted() ? HALTED_NOTE : ""}</div>
+<section><h2>Brief ${renderContextBudget(context)}</h2><div id="brief">${renderBrief(room, context)}</div></section>
+<section><h2>Board</h2><div id="board">${renderBoard(tasks, names)}</div></section>
+<section><h2>Members</h2><div id="roster">${renderRoster(room)}</div></section>
+<section><h2>Artifacts</h2><div id="artifacts">${renderArtifacts(room)}</div></section>
 <section><h2>Event log</h2><ul id="log">${lines.map(renderLogLine).join("")}</ul></section>
 `;
 
@@ -755,6 +815,83 @@ function numberParam(raw: string | null): number | undefined {
   return Number.isInteger(value) && value >= 0 ? value : undefined;
 }
 
+// ---------------------------------------------------------------------------
+// Live board: keeping folded regions in step with the log
+// ---------------------------------------------------------------------------
+
+/**
+ * Which on-page region a given event type can change, folded the same way
+ * `board.ts` folds tasks: not every event is board-shaped. A `cost.reported`
+ * changes a number nobody is watching live; a `task.claimed` changes exactly
+ * one card on the board. Listing the few event types that matter per region,
+ * rather than re-rendering everything whenever anything happens, is the
+ * difference between "live" and "a heartbeat that happens to redraw the page
+ * every second."
+ *
+ * This is deliberately a second, smaller classification than `describeEvent`
+ * in context.ts: that function answers "what happened, in words" for every
+ * event type because the log has to explain itself completely; this one only
+ * answers "does anything folded on screen need to be redrawn," which most
+ * event types — leases, notes, cost reports — answer "no."
+ */
+const REGION_EVENTS = {
+  board: new Set<EventType>([
+    "task.created",
+    "task.claimed",
+    "task.released",
+    "task.blocked",
+    "task.unblocked",
+    "task.submitted",
+    "task.accepted",
+    "task.rejected",
+    "task.escalated",
+    "task.unescalated",
+  ]),
+  roster: new Set<EventType>(["member.joined", "member.left"]),
+  artifacts: new Set<EventType>(["artifact.written", "artifact.deleted", "artifact.pruned"]),
+  // A pinned artifact's content is shown inline in the brief (see
+  // renderPinnedArtifact), so writing or deleting one can change what the
+  // brief displays and how many tokens it costs, not just the artifact list.
+  brief: new Set<EventType>([
+    "context.pinned",
+    "context.unpinned",
+    "artifact.written",
+    "artifact.deleted",
+  ]),
+  halted: new Set<EventType>(["room.halted"]),
+} as const satisfies Record<string, ReadonlySet<EventType>>;
+
+type Region = keyof typeof REGION_EVENTS;
+
+function regionsTouchedBy(types: EventType[]): Set<Region> {
+  const touched = new Set<Region>();
+  for (const type of types) {
+    for (const region of Object.keys(REGION_EVENTS) as Region[]) {
+      if (REGION_EVENTS[region].has(type)) touched.add(region);
+    }
+  }
+  return touched;
+}
+
+function renderBoardFragment(room: Room): string {
+  const names = new Map(room.roster().map((m) => [m.id, m.name] as const));
+  return renderBoard(listTasks(room), names);
+}
+
+function renderBriefFragment(
+  room: Room,
+): { budget: string; body: string; tokens: number; ceiling: number } {
+  const context = getContext(room);
+  return {
+    budget: renderContextBudget(context),
+    body: renderBrief(room, context),
+    tokens: context.tokens,
+    ceiling: context.ceiling,
+  };
+}
+
+const HALTED_NOTE = `<div class="note" style="margin-bottom:22px">This room has halted. It is still readable, but it will not accept further work.</div>`;
+
 /**
  * Server-Sent Events over a poll of the log.
  *
@@ -763,6 +900,20 @@ function numberParam(raw: string | null): number | undefined {
  * is no in-process event to subscribe to and a poll is the honest mechanism
  * rather than a lazy one. Each tick asks only for entries after the last one
  * sent, so a quiet room costs one indexed query per second and sends nothing.
+ *
+ * This is also the one mechanism the whole live board is built on, chosen
+ * over the alternatives ARCHITECTURE.md's brief for this feature raised:
+ * a client-side poll of its own would be a second polling loop next to a
+ * stream that already exists, and a plain client-side re-fetch-on-event would
+ * mean every browser tab re-runs the full page render whenever anything
+ * happens, including the events (a cost report, a lease renewal) that leave
+ * every folded region unchanged. Instead this single tick — the one already
+ * running for the log — also asks which regions the events it just fetched
+ * would change (`regionsTouchedBy`), and pushes *only those* down the same
+ * SSE connection as small, pre-rendered, pre-escaped HTML fragments tagged
+ * with a named event per region. The client's job stays exactly as dumb as
+ * it was for the log: take a string, put it in an element, do not parse or
+ * decide anything.
  */
 function streamEvents(
   room: Room,
@@ -805,6 +956,39 @@ function streamEvents(
       res.write(`data: ${JSON.stringify(line)}\n\n`);
       last = line.seq;
     }
+
+    // The log lines above are the whole story for the log itself. Everything
+    // from here down is the board catching up to what those lines just said,
+    // and only the regions those specific event types can affect — a room
+    // that only ever sees lease renewals and cost reports sends log lines
+    // and this one small counter, never a single board/roster/artifacts/brief
+    // re-render.
+    const meta: Record<string, string> = { head: `log at #${last}` };
+    const touched = regionsTouchedBy(fresh.map((line) => line.type));
+    if (touched.has("roster")) {
+      const n = room.roster().length;
+      meta.members = `${n} member${n === 1 ? "" : "s"}`;
+    }
+    if (touched.has("board")) {
+      const n = listTasks(room).length;
+      meta.tasks = `${n} task${n === 1 ? "" : "s"}`;
+      res.write(`event: board\ndata: ${JSON.stringify(renderBoardFragment(room))}\n\n`);
+    }
+    if (touched.has("roster")) {
+      res.write(`event: roster\ndata: ${JSON.stringify(renderRoster(room))}\n\n`);
+    }
+    if (touched.has("artifacts")) {
+      res.write(`event: artifacts\ndata: ${JSON.stringify(renderArtifacts(room))}\n\n`);
+    }
+    if (touched.has("brief")) {
+      const fragment = renderBriefFragment(room);
+      meta.tokens = `${fragment.tokens}/${fragment.ceiling} context tokens`;
+      res.write(`event: brief\ndata: ${JSON.stringify(fragment)}\n\n`);
+    }
+    if (touched.has("halted") && room.isHalted()) {
+      res.write(`event: halted\ndata: ${JSON.stringify(HALTED_NOTE)}\n\n`);
+    }
+    res.write(`event: meta\ndata: ${JSON.stringify(meta)}\n\n`);
   };
 
   const timer = setInterval(tick, pollMs);
