@@ -151,3 +151,10 @@ export {
   type ParsedSettingValue,
   type ConfigChangeResult,
 } from "./config.js";
+export {
+  verifyRoom,
+  type VerifySeverity,
+  type VerifyFinding,
+  type VerifySummary,
+  type VerifyReport,
+} from "./verify.js";
