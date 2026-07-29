@@ -631,7 +631,10 @@ const TOOLS: ToolDefinition[] = [
         acceptance: {
           type: "object",
           description:
-            'One of {"kind":"command","command":"npm test"}, {"kind":"reviewer"}, {"kind":"human"}. Defaults to reviewer.',
+            'One of {"kind":"command","command":"npm test"}, {"kind":"reviewer"}, {"kind":"human"}. Defaults to reviewer. ' +
+            'A command acceptance may add "timeoutSeconds" (a finite number greater than 0) to override the ' +
+            "room's commandTimeoutSeconds for just this task — e.g. a longer limit for a full integration suite " +
+            "than for a lint check in the same room. Omit it to use the room's setting.",
         },
       },
       required: ["title"],

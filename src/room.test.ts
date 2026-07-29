@@ -91,6 +91,7 @@ describe("Room.create", () => {
     const stored = JSON.parse(readFileSync(room.paths.config, "utf8")) as Record<string, unknown>;
     delete stored["roomSpendCapUsd"];
     delete stored["maxAttempts"];
+    delete stored["commandTimeoutSeconds"];
     writeFileSync(room.paths.config, JSON.stringify(stored, null, 2), "utf8");
 
     const again = Room.open(room.dir);
@@ -99,6 +100,10 @@ describe("Room.create", () => {
       // every reader is entitled to believe it.
       expect(again.config.roomSpendCapUsd).toBe(0);
       expect(again.config.maxAttempts).toBe(3);
+      // A room from before commandTimeoutSeconds existed gets exactly the
+      // limit every command acceptance had before this setting existed, so
+      // opening an old room changes nothing about how its tasks behave.
+      expect(again.config.commandTimeoutSeconds).toBe(60);
       // Settings that were on disk still win over the defaults.
       expect(again.config.name).toBe("old-room");
     } finally {

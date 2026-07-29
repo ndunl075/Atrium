@@ -884,6 +884,49 @@ describe("task add", () => {
     const humans = room.roster().filter((m) => m.role === "human");
     expect(humans).toHaveLength(1);
   });
+
+  it("accepts --command-timeout as a per-task override on a command acceptance", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+
+    const code = cmdTaskAdd(
+      [dir, "--title", "full suite", "--acceptance", "command", "--command", "npm test", "--command-timeout", "300"],
+      s,
+    );
+
+    expect(code).toBe(0);
+    const board = sink();
+    cmdBoard(["--json", dir], board);
+    const tasks = JSON.parse(board.outLines.join("\n"));
+    expect(tasks[0].acceptance).toEqual({
+      kind: "command",
+      command: "npm test",
+      timeoutSeconds: 300,
+    });
+  });
+
+  it("refuses a nonsense --command-timeout with a message saying what is allowed", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+
+    const code = cmdTaskAdd(
+      [dir, "--title", "full suite", "--acceptance", "command", "--command", "npm test", "--command-timeout", "0"],
+      s,
+    );
+
+    expect(code).not.toBe(0);
+    expect(s.errLines.join("\n")).toMatch(/greater than 0/);
+  });
+
+  it("refuses --command-timeout without --acceptance command", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+
+    const code = cmdTaskAdd([dir, "--title", "one", "--command-timeout", "30"], s);
+
+    expect(code).not.toBe(0);
+    expect(s.errLines.join("\n")).toMatch(/--command-timeout only makes sense/);
+  });
 });
 
 describe("task show", () => {

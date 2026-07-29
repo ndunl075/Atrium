@@ -177,6 +177,43 @@ describe("submitTask", () => {
     });
   });
 
+  describe("configured command timeout", () => {
+    it("kills the command at the room's commandTimeoutSeconds when the task sets none, and reports a rejection naming the room setting", async () => {
+      const room = tempRoom({ config: { commandTimeoutSeconds: 1 } });
+      const worker = room.join({ name: "w1", role: "worker" }).member;
+      // See the comment on the "sleep 5" test in the runAcceptanceCommand
+      // block below for why "sleep" rather than a platform-specific idle
+      // command.
+      const taskId = createTask(room, { kind: "command", command: "sleep 5" });
+      claim(room, taskId, worker.id);
+
+      const task = await submitTask(room, worker.id, taskId, { summary: "done" });
+
+      // A timeout is a rejection with a verdict, never a thrown error — the
+      // caller of submitTask gets a task back, not an exception.
+      expect(task.state).toBe("rejected");
+      expect(task.lastRejection?.reason).toContain("timed out");
+      expect(task.lastRejection?.reason).toContain("room's commandTimeoutSeconds");
+    }, 10_000);
+
+    it("lets a task's own timeoutSeconds override a much longer room default, and names the task setting", async () => {
+      const room = tempRoom({ config: { commandTimeoutSeconds: 60 } });
+      const worker = room.join({ name: "w1", role: "worker" }).member;
+      const taskId = createTask(room, {
+        kind: "command",
+        command: "sleep 5",
+        timeoutSeconds: 1,
+      });
+      claim(room, taskId, worker.id);
+
+      const task = await submitTask(room, worker.id, taskId, { summary: "done" });
+
+      expect(task.state).toBe("rejected");
+      expect(task.lastRejection?.reason).toContain("timed out");
+      expect(task.lastRejection?.reason).toContain("task's own acceptance.timeoutSeconds");
+    }, 10_000);
+  });
+
   describe("none acceptance", () => {
     it("is refused in a default room", async () => {
       const room = tempRoom();
