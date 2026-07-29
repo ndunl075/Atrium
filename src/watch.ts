@@ -40,7 +40,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { AddressInfo } from "node:net";
 
 import { listArtifacts } from "./artifacts.js";
-import { listTasks } from "./board.js";
+import { getTask, listTasks } from "./board.js";
 import {
   describeHistory,
   getContext,
@@ -51,7 +51,8 @@ import {
 import { isAtriumError } from "./errors.js";
 import type { Room } from "./room.js";
 import { diffArtifact, listVersions } from "./snapshots.js";
-import type { EventType, MemberId, Task, TaskState } from "./types.js";
+import { blockingDependencies } from "./tasks.js";
+import type { EventType, MemberId, Task, TaskId, TaskState } from "./types.js";
 
 export interface ServeWatchOptions {
   /** Defaults to 127.0.0.1. Only change this deliberately. */
@@ -401,7 +402,7 @@ function renderTask(task: Task, names: Map<MemberId, string>): string {
     : "";
 
   return `<div class="task">
-    <div class="title">${escapeHtml(task.title)}</div>
+    <div class="title"><a href="/task?id=${q(task.id)}">${escapeHtml(task.title)}</a></div>
     <div class="id">${escapeHtml(task.id)} · ${escapeHtml(task.acceptance.kind)} acceptance</div>
     ${extra}
   </div>`;
@@ -677,6 +678,245 @@ function renderDiffPage(room: Room, path: string, from?: number, to?: number): s
 }
 
 // ---------------------------------------------------------------------------
+// Task detail
+// ---------------------------------------------------------------------------
+
+/**
+ * The same acceptance wording `atrium task show` prints (see `cmdTaskShow` /
+ * `acceptanceLabel` in cli.ts), reproduced here rather than imported: cli.ts
+ * pulls in `parseArgs` and process-level concerns this server has no business
+ * touching, so the one sentence of formatting is duplicated instead of
+ * dragging a CLI module into a server that a browser talks to.
+ */
+function describeAcceptance(acceptance: Task["acceptance"]): string {
+  switch (acceptance.kind) {
+    case "command":
+      return (
+        `command — "${acceptance.command}" must exit 0` +
+        (acceptance.timeoutSeconds !== undefined
+          ? ` (killed after ${acceptance.timeoutSeconds}s)`
+          : "")
+      );
+    case "reviewer":
+      return "reviewer — a different member must accept";
+    case "human":
+      return "human — a human must accept";
+    case "none":
+      return "none — auto-accepts on submit";
+  }
+}
+
+interface Rejection {
+  seq: number;
+  at: string;
+  by: MemberId;
+  reason: string;
+}
+
+/**
+ * Every rejection this task has ever collected, oldest first, read straight
+ * from the log rather than from the folded `Task`.
+ *
+ * `foldTasks` (tasks.ts) only keeps `lastRejection` on purpose — the board's
+ * job is "what is true right now," and a full history would be a second thing
+ * for it to carry that nothing on the board needs. The individual
+ * `task.rejected` events are still sitting in the log with everything the
+ * fold discarded, so a page whose whole point is showing history reads them
+ * directly instead of trying to reconstruct a sequence out of a count.
+ */
+function taskRejections(room: Room, taskId: TaskId): Rejection[] {
+  const rejections: Rejection[] = [];
+  for (const event of room.log.read({ types: ["task.rejected"] })) {
+    if (event.type === "task.rejected" && event.data.taskId === taskId) {
+      rejections.push({
+        seq: event.seq,
+        at: event.ts,
+        by: event.data.by,
+        reason: event.data.reason,
+      });
+    }
+  }
+  return rejections;
+}
+
+/** One row of the dependency table: the dependency's own title and state,
+ * linked to its own detail page, and whether it is still holding this task
+ * up. `unmet` comes from `blockingDependencies` (tasks.ts) rather than being
+ * worked out again here — that function is already the one place "has this
+ * dependency been accepted" is decided, and re-deriving it here risks the two
+ * disagreeing the moment either one changes. */
+function renderDependencyRow(dep: Task | undefined, depId: TaskId, unmet: Set<TaskId>): string {
+  const status = unmet.has(depId)
+    ? `<span class="pill rejected">unmet</span>`
+    : `<span class="pill accepted">met</span>`;
+
+  if (!dep) {
+    // A dependsOn pointing nowhere is exactly as unmet as one pointing at
+    // real, unfinished work (see blockingDependencies' own doc comment), and
+    // a human looking at a stalled task deserves to see that plainly rather
+    // than a broken link.
+    return `<tr>
+      <td class="mono">${escapeHtml(depId)}</td>
+      <td class="empty">no such task</td>
+      <td>${status}</td>
+    </tr>`;
+  }
+
+  return `<tr>
+    <td><a href="/task?id=${q(dep.id)}">${escapeHtml(dep.title)}</a> <span class="id">${escapeHtml(dep.id)}</span></td>
+    <td><span class="pill ${dep.state}">${escapeHtml(dep.state)}</span></td>
+    <td>${status}</td>
+  </tr>`;
+}
+
+/**
+ * Claim and submission, together, because they are really one story told in
+ * two possible chapters: who is holding the task now, and — if it has ever
+ * been handed in — what was handed in and where to see it change. A fresh
+ * task has neither, and says so in one line rather than drawing two empty
+ * boxes for a state that is completely ordinary.
+ */
+function renderClaimAndSubmission(room: Room, task: Task, nameOf: (id: MemberId) => string): string {
+  const parts: string[] = [];
+
+  if (task.claimedBy) {
+    parts.push(
+      `<p>Claimed by <strong>${escapeHtml(nameOf(task.claimedBy))}</strong> at ` +
+        `${escapeHtml(task.claimedAt ?? "")}, expires ${escapeHtml(task.claimExpiresAt ?? "")}.</p>`,
+    );
+  }
+
+  if (task.submittedBy) {
+    const artifacts = task.submittedArtifacts ?? [];
+    const rows = artifacts
+      .map((path) => {
+        // The whole reason `submittedAtSeq` is recorded at all (see
+        // task.submitted in types.ts): a reviewer does not want the default
+        // diff (whatever the last two versions happen to be), it wants
+        // exactly what changed between what this submission was based on and
+        // what the path holds right now. Falling back to the default-diff
+        // link only when there is no such sequence to anchor to.
+        const link =
+          task.submittedAtSeq !== undefined
+            ? `<a href="/diff?path=${q(path)}&from=${task.submittedAtSeq}&to=${room.log.head()}">diff since submission</a>`
+            : listVersions(room, path).filter((v) => v.kind === "written").length >= 2
+              ? `<a href="/diff?path=${q(path)}">view diff</a>`
+              : `<span class="empty">one version</span>`;
+        return `<tr><td class="mono">${escapeHtml(path)}</td><td>${link}</td></tr>`;
+      })
+      .join("");
+
+    parts.push(`
+      <p>Submitted by <strong>${escapeHtml(nameOf(task.submittedBy))}</strong> at ${escapeHtml(
+        task.submittedAt ?? "",
+      )}${task.submittedAtSeq !== undefined ? ` (based on log #${task.submittedAtSeq})` : ""}:</p>
+      <div class="note" style="margin-bottom:12px">${escapeHtml(task.submissionSummary ?? "")}</div>
+      ${rows ? `<div class="card"><table><tr><th>artifact</th><th></th></tr>${rows}</table></div>` : ""}
+    `);
+  }
+
+  if (parts.length === 0) {
+    return `<p class="empty">Nobody has claimed this task yet.</p>`;
+  }
+  return parts.join("");
+}
+
+/**
+ * Everything the room knows about one task: `atrium task show`'s content,
+ * built for a page instead of a terminal. The one thing worth doing here that
+ * a terminal does not — see the module doc and the task this was built
+ * against — is the rejection history as an actual sequence (`taskRejections`)
+ * instead of the bare attempt count `cmdTaskShow` prints, because "3
+ * attempts" and "rejected for X, then for X again, then for Y" are different
+ * facts and only the log holds the second one.
+ *
+ * `getTask` throws `NotFoundError` for an id that does not exist, and that is
+ * left to propagate: `route`'s caller already turns an `AtriumError` into a
+ * readable page with the room's own message, and re-catching it here would
+ * only be a second copy of that same handling.
+ *
+ * This page does not join the live SSE region system the room page uses
+ * (`REGION_EVENTS` and friends, below). It was a real option, not an
+ * afterthought: a reader staring at one task while it gets claimed or rejected
+ * out from under them is exactly the moment liveness earns its keep. It loses
+ * to a plainer argument — everything this page shows (a rejection history, a
+ * dependency's state, a claim's expiry) is read once and re-read on refresh
+ * just fine, unlike the room page's log, which would be actively misleading
+ * frozen. Wiring a second live surface would mean either widening
+ * `regionsTouchedBy` to know about a specific task id (every event handler
+ * gaining a "does this event mention *this* task" branch) or running a whole
+ * second poll loop per open detail page, and this codebase's stated bias is
+ * against machinery a page has not earned. A reader who wants to watch a task
+ * change in real time still can: the board page they clicked in from already
+ * flashes the moment it changes.
+ */
+function renderTaskDetailPage(room: Room, taskId: TaskId): string {
+  const task = getTask(room, taskId);
+  const names = new Map(room.roster().map((m) => [m.id, m.name] as const));
+  const nameOf = (id: MemberId): string => names.get(id) ?? id;
+
+  const byId = new Map(listTasks(room).map((t) => [t.id, t] as const));
+  const unmet = new Set(blockingDependencies(task, byId));
+
+  const escalatedNote = task.escalated
+    ? `<div class="note" style="margin-bottom:22px">This task escalated after ${task.attempts} rejection${
+        task.attempts === 1 ? "" : "s"
+      } and is frozen until a human restarts it (see "atrium task restart").</div>`
+    : "";
+
+  const description =
+    task.description.trim() === ""
+      ? `<p class="empty">No description.</p>`
+      : `<pre class="brief">${escapeHtml(task.description)}</pre>`;
+
+  const dependencies =
+    task.dependsOn.length === 0
+      ? `<p class="empty">This task has no dependencies.</p>`
+      : `<div class="card"><table>
+          <tr><th>task</th><th>state</th><th></th></tr>
+          ${task.dependsOn.map((id) => renderDependencyRow(byId.get(id), id, unmet)).join("")}
+        </table></div>`;
+
+  const rejections = taskRejections(room, task.id);
+  const rejectionsBody =
+    rejections.length === 0
+      ? `<p class="empty">This task has not been rejected.</p>`
+      : `<div class="card"><table>
+          <tr><th>when</th><th>by</th><th>reason</th></tr>
+          ${rejections
+            .map(
+              (r) => `<tr>
+                <td class="mono">#${r.seq} · ${escapeHtml(shortTime(r.at))}</td>
+                <td>${escapeHtml(nameOf(r.by))}</td>
+                <td>${escapeHtml(r.reason)}</td>
+              </tr>`,
+            )
+            .join("")}
+        </table></div>`;
+
+  const body = `
+<div class="crumb"><a href="/">← room</a></div>
+<header class="masthead">
+  <h1>${escapeHtml(task.title)}</h1>
+  <div class="meta">
+    <span class="pill ${task.state}">${escapeHtml(task.state)}</span>
+    <span class="mono">${escapeHtml(task.id)}</span>
+    <span>${escapeHtml(describeAcceptance(task.acceptance))}</span>
+  </div>
+</header>
+${escalatedNote}
+<section><h2>Description</h2>${description}</section>
+<section><h2>Dependencies</h2>${dependencies}</section>
+<section><h2>Claim &amp; submission</h2>${renderClaimAndSubmission(room, task, nameOf)}</section>
+<section><h2>Rejection history${
+    task.attempts > 0 ? ` · ${task.attempts} attempt${task.attempts === 1 ? "" : "s"}` : ""
+  }</h2>${rejectionsBody}</section>
+`;
+
+  return page(`${task.title} — atrium watch`, body);
+}
+
+// ---------------------------------------------------------------------------
 // Server
 // ---------------------------------------------------------------------------
 
@@ -777,6 +1017,26 @@ function route(
 
   if (url.pathname === "/events") {
     streamEvents(room, pollMs, streams, req, res, Number(url.searchParams.get("from") ?? "0"));
+    return;
+  }
+
+  if (url.pathname === "/task") {
+    const id = url.searchParams.get("id");
+    if (!id) {
+      sendHtml(
+        res,
+        400,
+        page(
+          "atrium watch",
+          `<div class="crumb"><a href="/">← room</a></div><div class="note">A task page needs an id: /task?id=task_abc123</div>`,
+        ),
+      );
+      return;
+    }
+    // A bogus id throws NotFoundError out of getTask, which the caller of
+    // `route` already turns into a readable 400 page carrying the room's own
+    // message — see the doc comment on renderTaskDetailPage.
+    sendHtml(res, 200, renderTaskDetailPage(room, id));
     return;
   }
 

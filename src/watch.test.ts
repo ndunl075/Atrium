@@ -7,7 +7,8 @@ import { escapeHtml, serveWatch, type WatchServerHandle } from "./watch.js";
 import { Room } from "./room.js";
 import { acquireLease } from "./leases.js";
 import { writeArtifact } from "./artifacts.js";
-import { createTask } from "./board.js";
+import { claimTask, createTask } from "./board.js";
+import { reviewTask, submitTask } from "./acceptance.js";
 import { pinArtifact } from "./context.js";
 import { pruneVersions } from "./snapshots.js";
 import { reportCost } from "./cost.js";
@@ -217,12 +218,15 @@ describe("read-only", () => {
     acquireLease(room, w.id, "draft.md");
     writeArtifact(room, w.id, "draft.md", "one\n");
     writeArtifact(room, w.id, "draft.md", "two\n");
+    const task = createTask(room, w.id, { title: "Draft the opening" });
 
     const handle = await start(room);
     const before = room.log.head();
 
     await get(handle, "/");
     await get(handle, "/diff?path=draft.md");
+    await get(handle, `/task?id=${task.id}`);
+    await get(handle, "/task?id=does-not-exist");
     await get(handle, "/nope");
 
     expect(room.log.head()).toBe(before);
@@ -307,6 +311,132 @@ describe("diff pages", () => {
     const { status, body } = await get(await start(tempRoom()), "/diff");
     expect(status).toBe(400);
     expect(body).toContain("A diff needs a path");
+  });
+});
+
+describe("task detail page", () => {
+  it("shows a claimed task's holder and claim expiry", async () => {
+    const room = tempRoom();
+    const worker = room.join({ name: "scout", role: "worker" }).member;
+    const task = createTask(room, worker.id, { title: "Draft the opening" });
+    const claimed = claimTask(room, worker.id, task.id);
+
+    const { status, body } = await get(await start(room), `/task?id=${task.id}`);
+
+    expect(status).toBe(200);
+    expect(body).toContain("Draft the opening");
+    expect(body).toContain("Claimed by <strong>scout</strong>");
+    expect(body).toContain(claimed.claimExpiresAt);
+  });
+
+  it("shows a rejection history with two distinct reasons, in order", async () => {
+    const room = tempRoom();
+    const worker = room.join({ name: "worker", role: "worker" }).member;
+    const reviewer = room.join({ name: "reviewer", role: "reviewer" }).member;
+    const task = createTask(room, worker.id, { title: "Ship the report" });
+
+    claimTask(room, worker.id, task.id);
+    await submitTask(room, worker.id, task.id, { summary: "first pass" });
+    reviewTask(room, reviewer.id, task.id, { accept: false, reason: "missing citations" });
+
+    claimTask(room, worker.id, task.id);
+    await submitTask(room, worker.id, task.id, { summary: "second pass" });
+    reviewTask(room, reviewer.id, task.id, { accept: false, reason: "wrong tone" });
+
+    const { body } = await get(await start(room), `/task?id=${task.id}`);
+
+    expect(body).toContain("missing citations");
+    expect(body).toContain("wrong tone");
+    expect(body).toContain("2 attempts");
+    // The whole point of a history over a count: two different reasons show
+    // up in the order they actually happened.
+    expect(body.indexOf("missing citations")).toBeLessThan(body.indexOf("wrong tone"));
+  });
+
+  it("names a blocked task's specific unmet dependency, linked to its own page", async () => {
+    const room = tempRoom();
+    const worker = room.join({ name: "worker", role: "worker" }).member;
+    const research = createTask(room, worker.id, { title: "Research the topic" });
+    const draft = createTask(room, worker.id, {
+      title: "Draft the opening",
+      dependsOn: [research.id],
+    });
+
+    const { body } = await get(await start(room), `/task?id=${draft.id}`);
+
+    expect(body).toContain("Research the topic");
+    expect(body).toContain(`href="/task?id=${research.id}"`);
+    expect(body).toContain(`class="pill blocked"`);
+    expect(body).toContain(`class="pill rejected">unmet</span>`);
+  });
+
+  it("answers honestly when the task id does not exist", async () => {
+    const { status, body } = await get(await start(tempRoom()), "/task?id=task_bogus");
+
+    expect(status).toBe(400);
+    expect(body).toContain("No task task_bogus in this room");
+  });
+
+  it("needs an id", async () => {
+    const { status, body } = await get(await start(tempRoom()), "/task");
+    expect(status).toBe(400);
+    expect(body).toContain("A task page needs an id");
+  });
+
+  it("escapes a task title and a rejection reason, both attacker-influenced", async () => {
+    const room = tempRoom();
+    const worker = room.join({ name: "worker", role: "worker" }).member;
+    const reviewer = room.join({ name: "reviewer", role: "reviewer" }).member;
+    const task = createTask(room, worker.id, {
+      title: `</h1><script>alert(1)</script>`,
+    });
+    claimTask(room, worker.id, task.id);
+    await submitTask(room, worker.id, task.id, { summary: "done" });
+    reviewTask(room, reviewer.id, task.id, {
+      accept: false,
+      reason: `<img src=x onerror=alert(2)>`,
+    });
+
+    const { body } = await get(await start(room), `/task?id=${task.id}`);
+
+    expect(body).not.toContain("<script>alert(1)</script>");
+    expect(body).not.toContain("<img src=x onerror");
+    expect(body).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(body).toContain("&lt;img src=x onerror=alert(2)&gt;");
+  });
+
+  it("is GET-only, like every other page", async () => {
+    const room = tempRoom();
+    const worker = room.join({ name: "worker", role: "worker" }).member;
+    const task = createTask(room, worker.id, { title: "Draft the opening" });
+    const handle = await start(room);
+
+    const res = await fetch(new URL(`/task?id=${task.id}`, handle.url), { method: "POST" });
+
+    expect(res.status).toBe(405);
+    expect(res.headers.get("allow")).toBe("GET");
+  });
+
+  it("links to it from the board", async () => {
+    const room = tempRoom();
+    const worker = room.join({ name: "worker", role: "worker" }).member;
+    const task = createTask(room, worker.id, { title: "Draft the opening" });
+
+    const { body } = await get(await start(room), "/");
+
+    expect(body).toContain(`href="/task?id=${task.id}"`);
+  });
+
+  it("reads as an ordinary fresh task rather than a page of empty sections", async () => {
+    const room = tempRoom();
+    const worker = room.join({ name: "worker", role: "worker" }).member;
+    const task = createTask(room, worker.id, { title: "Draft the opening" });
+
+    const { body } = await get(await start(room), `/task?id=${task.id}`);
+
+    expect(body).toContain("This task has no dependencies.");
+    expect(body).toContain("Nobody has claimed this task yet.");
+    expect(body).toContain("This task has not been rejected.");
   });
 });
 
