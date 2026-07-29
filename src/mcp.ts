@@ -29,13 +29,13 @@ import {
 import { claimTask, createTask, getTask, listTasks } from "./board.js";
 import { describeHistory, getContext, listPinned, pinArtifact, unpinArtifact } from "./context.js";
 import { costSummary, reportCost } from "./cost.js";
-import { isAtriumError } from "./errors.js";
+import { InvalidError, isAtriumError } from "./errors.js";
 import { readArtifact, writeArtifact } from "./artifacts.js";
 import { resolveArtifact, toArtifactPath } from "./paths.js";
 import { reviewTask, submitTask } from "./acceptance.js";
 import { Room } from "./room.js";
 import { searchArtifacts } from "./search.js";
-import { contentStateAt } from "./snapshots.js";
+import { contentStateAt, diffArtifact, listVersions } from "./snapshots.js";
 import { PACKAGE_VERSION } from "./util.js";
 import type { Acceptance, EventType, Member, MemberRole, TaskId } from "./types.js";
 
@@ -363,6 +363,72 @@ export class RoomServer {
       // the read half of that — the write half is already `join` itself.
       case "list_members":
         return this.room.roster();
+
+      // Everything below is what lets an agent see what changed rather than
+      // just what a path says now — the tool-layer half of ARCHITECTURE.md
+      // §3.3's history story, and specifically what a `reviewer` needs that
+      // read_artifact alone does not give it (§5): read_artifact can return
+      // content at a seq if the caller already knows which seq to ask for,
+      // but nothing before this told an agent which seqs exist or what
+      // differs between two of them.
+      case "list_versions":
+        return listVersions(this.room, str(args, "path"));
+
+      case "diff_artifact": {
+        const path = str(args, "path");
+        const hasFrom = args["from_seq"] !== undefined;
+        const hasTo = args["to_seq"] !== undefined;
+
+        let fromSeq: number;
+        let toSeq: number;
+
+        if (hasFrom && hasTo) {
+          fromSeq = reqNum(args, "from_seq");
+          toSeq = reqNum(args, "to_seq");
+        } else if (hasFrom && !hasTo) {
+          // The shape a reviewer actually wants: a known starting point (its
+          // task's submittedAtSeq) diffed up through whatever the path holds
+          // right now, without having to first look up the latest seq itself.
+          fromSeq = reqNum(args, "from_seq");
+          const versions = listVersions(this.room, path);
+          const latest = versions[versions.length - 1];
+          if (!latest) {
+            throw new InvalidError(
+              `${path} has no recorded versions, so there is nothing to diff up to.`,
+              { path },
+            );
+          }
+          toSeq = latest.seq;
+        } else if (!hasFrom && hasTo) {
+          // No sensible default exists for "diff from what" — guessing one
+          // would be exactly the kind of plausible-but-false answer this
+          // tool exists to avoid, so this asks for the missing half instead.
+          throw new InvalidError(
+            "to_seq needs from_seq alongside it. Pass both explicitly, or neither to diff the last two recorded versions.",
+            { path },
+          );
+        } else {
+          // Named nothing: mirror what a human gets from `atrium diff` with
+          // no --from/--to, the last two recorded versions. That is the
+          // right default for "what did I just change", which is the human
+          // case cmdDiff was built for — but it is usually the wrong default
+          // for reviewing a task's submission, which may have gone through
+          // several writes before being handed in. A reviewer should pass
+          // submittedAtSeq (see get_task) as from_seq rather than lean on
+          // this default; the description says so.
+          const versions = listVersions(this.room, path);
+          if (versions.length < 2) {
+            throw new InvalidError(
+              `${path} has ${versions.length === 0 ? "no" : "only one"} recorded version; there is nothing to diff. Pass from_seq and to_seq explicitly if you mean something else.`,
+              { path, versions: versions.length },
+            );
+          }
+          fromSeq = versions[versions.length - 2]!.seq;
+          toSeq = versions[versions.length - 1]!.seq;
+        }
+
+        return diffArtifact(this.room, path, fromSeq, toSeq);
+      }
 
       default:
         throw new Error(`Unknown tool: ${name}`);
@@ -832,5 +898,36 @@ const TOOLS: ToolDefinition[] = [
     description:
       "Everyone who has ever joined this room, including members who have since left (marked inactive rather than removed). For each one: role, tags, and the manifest it gave on join describing what it's good for. This is entirely self-reported — ARCHITECTURE.md §3.2 deliberately has no capability schema behind it, so nothing here is verified. Treat it as a lead on who to ask or hand work to, not a guarantee of what anyone can actually do.",
     inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "list_versions",
+    description:
+      "Every version a path has ever had, oldest first: log position (seq), when, who wrote or deleted it, and its size. This is what makes read_artifact's seq argument and diff_artifact's from_seq/to_seq usable at all — without calling this first, an agent asking for a specific seq is guessing. A path that was later deleted still lists every version it had before the delete; a path that has never been written comes back as an empty list rather than an error. Reach for this before accepting a reviewer task: it is how you find out whether current content is the whole story or just the last of several revisions.",
+    inputSchema: {
+      type: "object",
+      properties: { path: { type: "string" } },
+      required: ["path"],
+    },
+  },
+  {
+    name: "diff_artifact",
+    description:
+      "A unified diff between two versions of a path — for seeing what a piece of work actually changed instead of judging it from its end state alone, which is the gap ARCHITECTURE.md §5 leaves a `reviewer` in otherwise. Reports one of four outcomes, kept distinct rather than flattened into 'here is a patch': identical:true (both sides are the same bytes, patch is empty because there is nothing to show); binary:true (not text, so patch is a one-line note instead of an attempted line diff); pruned:true (one side's content has been discarded by retention and the comparison genuinely cannot be made — patch explains which side; do not read this as 'no changes', it means 'no answer'); or a real unified patch. Called with neither from_seq nor to_seq, this compares the last two recorded versions of the path, the same default a human gets from `atrium diff` — but a reviewer is usually better served diffing a whole submission, not just its last save: pass from_seq as the task's submittedAtSeq (see get_task or the task.submitted event, which is exactly the log position the work was based on) and leave to_seq out, and this diffs from that starting point up through the path's current version. Call list_versions first if you are not sure which seqs exist.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        from_seq: {
+          type: "number",
+          description:
+            "Earlier log position. Omit along with to_seq to diff the last two recorded versions. Give this alone (e.g. a task's submittedAtSeq) to diff from here up to the path's current version.",
+        },
+        to_seq: {
+          type: "number",
+          description: "Later log position. If given explicitly, from_seq must be given too.",
+        },
+      },
+      required: ["path"],
+    },
   },
 ];
