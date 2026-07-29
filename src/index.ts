@@ -69,6 +69,7 @@ export {
   type RoomContext,
   type PinnedArtifact,
   type HistoryLine,
+  type HistoryOptions,
 } from "./context.js";
 export {
   searchArtifacts,

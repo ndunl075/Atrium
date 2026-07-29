@@ -10,6 +10,7 @@
 
 import { openDb, type Db } from "./db.js";
 import { InvalidError } from "./errors.js";
+import { eventTypes, isEventType } from "./types.js";
 import type { AnyEvent, Event, EventMap, EventType, MemberId } from "./types.js";
 import { now } from "./util.js";
 
@@ -118,6 +119,19 @@ export class EventLog {
       params.push(options.to);
     }
     if (options.types && options.types.length > 0) {
+      // A misspelled or made-up type would otherwise just match nothing,
+      // which looks identical to a correct filter over a quiet stretch of
+      // the log — only one of those is the caller's fault, and only this
+      // check can tell them apart. eventTypes() is generated from the same
+      // registry `isEventType` checks against (see types.ts), so a type this
+      // build does not know about is refused rather than silently ignored.
+      const unknown = options.types.filter((t) => !isEventType(t));
+      if (unknown.length > 0) {
+        throw new InvalidError(
+          `Unknown event type${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}. ` +
+            `Valid types: ${eventTypes().join(", ")}.`,
+        );
+      }
       where.push(`type IN (${options.types.map(() => "?").join(", ")})`);
       params.push(...options.types);
     }

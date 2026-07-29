@@ -235,6 +235,100 @@ describe("log", () => {
     expect(code).not.toBe(0);
     expect(s.errLines.join("\n")).toMatch(/--limit/);
   });
+
+  it("--type filters to just that event type", () => {
+    const { dir, room } = tempRoom();
+    const worker = room.join({ name: "scout", role: "worker" }).member;
+    room.log.append(worker.id, "note.posted", { memberId: worker.id, text: "hi" });
+
+    const s = sink();
+    const code = cmdLog(["--json", "--type", "note.posted", dir], s);
+    const lines = JSON.parse(s.outLines.join("\n"));
+
+    expect(code).toBe(0);
+    expect(lines).toHaveLength(1);
+    expect(lines[0].line).toContain("hi");
+  });
+
+  it("--actor filters to just that member's events, by name", () => {
+    const { dir, room } = tempRoom();
+    room.join({ name: "scout", role: "worker" });
+    room.join({ name: "editor", role: "reviewer" });
+
+    const s = sink();
+    const code = cmdLog(["--json", "--actor", "editor", dir], s);
+    const lines = JSON.parse(s.outLines.join("\n"));
+
+    expect(code).toBe(0);
+    expect(lines).toHaveLength(1);
+    expect(lines[0].line).toMatch(/editor joined/);
+  });
+
+  it("--contains filters to lines matching the text, case-insensitively", () => {
+    const { dir, room } = tempRoom();
+    const worker = room.join({ name: "scout", role: "worker" }).member;
+    room.log.append(worker.id, "note.posted", { memberId: worker.id, text: "check the DRAFT" });
+
+    const s = sink();
+    const code = cmdLog(["--json", "--contains", "draft", dir], s);
+    const lines = JSON.parse(s.outLines.join("\n"));
+
+    expect(code).toBe(0);
+    expect(lines.some((l: { line: string }) => l.line.includes("DRAFT"))).toBe(true);
+  });
+
+  it("--from and --to select an inclusive sequence range", () => {
+    const { dir, room } = tempRoom();
+    const worker = room.join({ name: "scout", role: "worker" }).member;
+    const a = room.log.append(worker.id, "note.posted", { memberId: worker.id, text: "a" });
+    room.log.append(worker.id, "note.posted", { memberId: worker.id, text: "b" });
+    const c = room.log.append(worker.id, "note.posted", { memberId: worker.id, text: "c" });
+
+    const s = sink();
+    const code = cmdLog(["--json", "--from", String(a.seq), "--to", String(c.seq), "--type", "note.posted", dir], s);
+    const lines = JSON.parse(s.outLines.join("\n"));
+
+    expect(code).toBe(0);
+    expect(lines.map((l: { seq: number }) => l.seq)).toEqual([a.seq, a.seq + 1, c.seq]);
+  });
+
+  it("combining two filters intersects them rather than widening the result", () => {
+    const { dir, room } = tempRoom();
+    const scout = room.join({ name: "scout", role: "worker" }).member;
+    const editor = room.join({ name: "editor", role: "reviewer" }).member;
+    room.log.append(scout.id, "note.posted", { memberId: scout.id, text: "draft ready" });
+    room.log.append(editor.id, "note.posted", { memberId: editor.id, text: "draft ready" });
+
+    const s = sink();
+    const code = cmdLog(["--json", "--actor", "scout", "--contains", "draft", dir], s);
+    const lines = JSON.parse(s.outLines.join("\n"));
+
+    expect(code).toBe(0);
+    expect(lines).toHaveLength(1);
+    expect(lines[0].line).toMatch(/^scout/);
+  });
+
+  it("refuses an unknown --type and names the valid ones", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+    const code = runCli(["log", "--type", "task.acepted", dir], s);
+
+    expect(code).not.toBe(0);
+    const message = s.errLines.join("\n");
+    expect(message).toMatch(/Unknown event type/);
+    expect(message).toContain("task.accepted");
+  });
+
+  it("reports an empty result plainly, echoing back what was filtered on", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+    const code = cmdLog(["--contains", "nothing will ever match this", dir], s);
+
+    expect(code).toBe(0);
+    const text = s.outLines.join("\n");
+    expect(text).toMatch(/Nothing matched/);
+    expect(text).toContain("nothing will ever match this");
+  });
 });
 
 describe("invite", () => {

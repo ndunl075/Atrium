@@ -37,7 +37,7 @@ import { Room } from "./room.js";
 import { searchArtifacts } from "./search.js";
 import { contentStateAt } from "./snapshots.js";
 import { PACKAGE_VERSION } from "./util.js";
-import type { Acceptance, Member, MemberRole, TaskId } from "./types.js";
+import type { Acceptance, EventType, Member, MemberRole, TaskId } from "./types.js";
 
 /** Newest first. An older client gets its own version echoed back. */
 const SUPPORTED_PROTOCOL_VERSIONS = [
@@ -319,11 +319,24 @@ export class RoomServer {
         return { seq: event.seq };
       }
 
-      case "read_log":
+      case "read_log": {
+        // Filters intersect rather than widen — type, actor, contains, and
+        // the from/to range all narrow the same result together, the same
+        // rule "atrium log --help" documents for the CLI equivalent of this
+        // tool. An unknown type in `types` is refused by describeHistory
+        // itself, which names the valid ones rather than quietly returning
+        // nothing; a filter combination that matches nothing is a normal,
+        // non-error result and just comes back as an empty array.
+        const types = strArray(args, "types");
         return describeHistory(this.room, {
           limit: num(args, "limit", 100),
           ...(args["from"] !== undefined ? { from: num(args, "from", 1) } : {}),
+          ...(args["to"] !== undefined ? { to: num(args, "to", 0) } : {}),
+          ...(types.length > 0 ? { types: types as EventType[] } : {}),
+          ...(typeof args["actor"] === "string" ? { actor: args["actor"] } : {}),
+          ...(typeof args["contains"] === "string" ? { contains: args["contains"] } : {}),
         });
+      }
 
       case "get_task":
         return getTask(this.room, str(args, "task_id") as TaskId);
@@ -772,12 +785,29 @@ const TOOLS: ToolDefinition[] = [
   {
     name: "read_log",
     description:
-      "What has happened in this room, as readable lines. This is how you catch up on a job already in progress without anybody summarising it for you.",
+      "What has happened in this room, as readable lines. This is how you catch up on a job already in progress without anybody summarising it for you. A room can hold a thousand events against a budget of a thousand actions, so reach for the filters below instead of reading everything and searching client-side: they combine (passing more than one narrows the result, it never widens it), and matching nothing is a normal answer that comes back as an empty array rather than an error.",
     inputSchema: {
       type: "object",
       properties: {
-        limit: { type: "number", description: "Default 100." },
-        from: { type: "number", description: "Start from this sequence number." },
+        limit: { type: "number", description: "At most this many lines of the filtered result. Default 100." },
+        from: { type: "number", description: "First sequence number to include." },
+        to: { type: "number", description: "Last sequence number to include (inclusive)." },
+        types: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Only these event types, e.g. [\"task.accepted\", \"task.rejected\"]. An unknown type is refused with the full list of valid ones in the error, rather than silently matching nothing.",
+        },
+        actor: {
+          type: "string",
+          description:
+            "Only events caused by this actor — a member's name as it appears in the log, their member id, or \"system\". Exact match, not a substring.",
+        },
+        contains: {
+          type: "string",
+          description:
+            "Only lines whose rendered text contains this, case-insensitively. A plain substring match, not a regular expression.",
+        },
       },
     },
   },

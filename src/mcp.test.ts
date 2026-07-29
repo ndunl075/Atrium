@@ -641,3 +641,91 @@ describe("list_members", () => {
     expect(isError).toBe(false);
   });
 });
+
+describe("read_log filtering", () => {
+  it("filters by types, refusing an unknown one and naming the valid ones", async () => {
+    const room = tempRoom();
+    const server = new RoomServer(room);
+    await call(server, "join", { name: "scout", role: "worker" });
+
+    const { data, isError } = await call(server, "read_log", { types: ["member.joined"] });
+    expect(isError).toBe(false);
+    expect(data).toHaveLength(1);
+    expect(data[0].line).toMatch(/scout joined/);
+
+    const bad = await call(server, "read_log", { types: ["memeber.joined"] });
+    expect(bad.isError).toBe(true);
+    expect(bad.data.message).toMatch(/Unknown event type/);
+    expect(bad.data.message).toContain("member.joined");
+  });
+
+  it("filters by actor, matching the name a member joined under", async () => {
+    const room = tempRoom();
+    const server = new RoomServer(room);
+    await call(server, "join", { name: "scout", role: "worker" });
+    await call(server, "post_note", { text: "note from scout" });
+
+    const other = new RoomServer(room);
+    await call(other, "join", { name: "editor", role: "reviewer" });
+    await call(other, "post_note", { text: "note from editor" });
+
+    const { data } = await call(server, "read_log", { actor: "scout" });
+    expect(data.every((l: any) => l.line.includes("scout"))).toBe(true);
+    expect(data.some((l: any) => l.line.includes("note from scout"))).toBe(true);
+    expect(data.some((l: any) => l.line.includes("note from editor"))).toBe(false);
+  });
+
+  it("filters by a case-insensitive substring of the rendered line", async () => {
+    const room = tempRoom();
+    const server = new RoomServer(room);
+    await call(server, "join", { name: "scout", role: "worker" });
+    await call(server, "post_note", { text: "check the DRAFT before shipping" });
+    await call(server, "post_note", { text: "unrelated" });
+
+    const { data } = await call(server, "read_log", { contains: "draft" });
+    expect(data).toHaveLength(1);
+    expect(data[0].line).toContain("DRAFT");
+  });
+
+  it("intersects filters rather than widening the result", async () => {
+    const room = tempRoom();
+    const scout = new RoomServer(room);
+    const editor = new RoomServer(room);
+    await call(scout, "join", { name: "scout", role: "worker" });
+    await call(editor, "join", { name: "editor", role: "reviewer" });
+    await call(scout, "post_note", { text: "draft ready" });
+    await call(editor, "post_note", { text: "draft ready" });
+
+    const { data } = await call(scout, "read_log", { actor: "scout", contains: "draft" });
+    expect(data).toHaveLength(1);
+    expect(data[0].line).toMatch(/^scout/);
+  });
+
+  it("takes an inclusive from/to sequence range", async () => {
+    const room = tempRoom();
+    const server = new RoomServer(room);
+    await call(server, "join", { name: "scout", role: "worker" });
+    await call(server, "post_note", { text: "a" });
+    await call(server, "post_note", { text: "b" });
+    const head = room.log.head();
+
+    const { data } = await call(server, "read_log", {
+      from: head - 1,
+      to: head,
+      types: ["note.posted"],
+    });
+    expect(data.map((l: any) => l.seq)).toEqual([head - 1, head]);
+  });
+
+  it("returns an empty array, not an error, when nothing matches", async () => {
+    const room = tempRoom();
+    const server = new RoomServer(room);
+    await call(server, "join", { name: "scout", role: "worker" });
+
+    const { data, isError } = await call(server, "read_log", {
+      contains: "something that never happened",
+    });
+    expect(isError).toBe(false);
+    expect(data).toEqual([]);
+  });
+});
