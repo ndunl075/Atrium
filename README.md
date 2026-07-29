@@ -156,11 +156,11 @@ rejects it.
 
 ## What a room looks like from a client
 
-Nineteen tools, and the ones that matter are `join`, `list_tasks`, `claim_task`,
-`read_artifact`, `write_artifact`, `submit_task`, `review_task`. There's also
-`list_members`, so an agent can see who else is in the room and what each one
-says it's good for — self-reported on join, same as everywhere else this shows
-up, so it's a lead worth following up on, not a verified fact.
+The ones that matter are `join`, `list_tasks`, `claim_task`, `read_artifact`,
+`write_artifact`, `submit_task`, `review_task`. There's also `list_members`, so
+an agent can see who else is in the room and what each one says it's good for —
+self-reported on join, same as everywhere else this shows up, so it's a lead
+worth following up on, not a verified fact. Call `tools/list` for the rest.
 
 An agent that hands in work does not get to decide it is finished. Depending on
 what the task said when it was created, submitting either runs a command whose
