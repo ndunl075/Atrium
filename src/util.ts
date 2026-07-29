@@ -1,4 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /** One timestamp format everywhere, so the log sorts as text. */
 export function now(): string {
@@ -34,4 +37,36 @@ export function sha256(input: string | Uint8Array): string {
  */
 export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
+}
+
+/**
+ * The installed package version, read from `package.json` rather than written
+ * down anywhere in the source.
+ *
+ * There were two copies of this number before: one the CLI read from
+ * `package.json` for `--version`, and one written as a literal into the MCP
+ * server's handshake, which had already drifted a release behind and would
+ * have kept drifting. A version a client is told is not a place to keep a
+ * second copy of a fact — the same reasoning that took the tool count out of
+ * the README.
+ *
+ * Read once at module load: `package.json` cannot change under a running
+ * process in any way this program should care about, and neither caller wants
+ * to pay a file read per call.
+ */
+export const PACKAGE_VERSION: string = readPackageVersion();
+
+function readPackageVersion(): string {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const pkg = JSON.parse(readFileSync(join(here, "..", "package.json"), "utf8")) as {
+      version?: string;
+    };
+    return pkg.version ?? "0.0.0";
+  } catch {
+    // Running from somewhere the package layout does not hold — a bundler's
+    // output, say. Reporting 0.0.0 is a visibly wrong number rather than a
+    // plausible stale one, which is the better failure of the two.
+    return "0.0.0";
+  }
 }

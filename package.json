@@ -1,6 +1,6 @@
 {
   "name": "atrium",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A shared workspace that multiple AI agents join in order to do one job together.",
   "license": "Apache-2.0",
   "type": "module",

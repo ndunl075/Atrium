@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { PassThrough } from "node:stream";
 
 import { RoomServer, serveStdio } from "./mcp.js";
@@ -58,6 +59,26 @@ describe("the protocol handshake", () => {
     expect(result.protocolVersion).toBe("2024-11-05");
     expect(result.serverInfo.name).toBe("atrium");
     expect(result.capabilities.tools).toBeDefined();
+  });
+
+  it("reports the package's real version, not a second copy of it", async () => {
+    const server = new RoomServer(tempRoom());
+    const res = await server.handleMessage({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2024-11-05" },
+    });
+
+    // This was a string literal for a while and had already drifted a release
+    // behind what package.json said. Asserting against the file is what stops
+    // it drifting again — a version a client is told is not somewhere to keep
+    // a second copy of a fact.
+    const pkg = JSON.parse(
+      readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8"),
+    ) as { version: string };
+
+    expect((res?.result as any).serverInfo.version).toBe(pkg.version);
   });
 
   it("falls back to its own newest version for one it does not know", async () => {
