@@ -833,7 +833,7 @@ describe("diff_artifact", () => {
     const v1 = await call(server, "write_artifact", { path: "blob.bin", content: "text\n" });
     const v2 = await call(server, "write_artifact", {
       path: "blob.bin",
-      content: "abc def",
+      content: "abc\u0000def",
     });
 
     const { data } = await call(server, "diff_artifact", {
