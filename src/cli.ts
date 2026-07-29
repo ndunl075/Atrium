@@ -689,6 +689,124 @@ export function cmdSearch(argv: string[], sink: Sink): number {
 }
 
 // ---------------------------------------------------------------------------
+// note
+// ---------------------------------------------------------------------------
+//
+// `post_note` has been an MCP tool since ARCHITECTURE.md §7.1 listed it: an
+// agent in a room can leave a note in the log for the others — "the client
+// changed the deadline," "ignore the third source, it is wrong" — for
+// anything worth recording that is not a task and not an artifact. Until now
+// a human running the same room by hand had no equivalent at all: there was
+// no "atrium note" command, and nothing short of joining the room as an MCP
+// client could add one. That asymmetry is backwards — the human is the one
+// member of a room most likely to have something to say that is neither a
+// task nor a file. This command is the missing half. It acts as the CLI's
+// own "cli" human member for the same reason "atrium task" and "atrium
+// context --pin" do (see "atrium task --help" for why that identity exists),
+// and reuses `ensureCliHuman` rather than inventing a second identity
+// mechanism.
+//
+// `atrium log` already renders `note.posted` events as readable sentences —
+// `describeHistory` in context.ts has said "X noted: ..." (or "X noted on
+// task Y: ...") since the event type was added — so this file adds no second
+// listing for notes. Reading them back was already solved; only writing one
+// from outside MCP was missing.
+
+/**
+ * How long a note is allowed to be.
+ *
+ * ARCHITECTURE.md §6 measures a room's action budget in events, not bytes, so
+ * nothing before this stopped a note the length of a novel from landing in
+ * the log, where `atrium log` and the `read_log` MCP tool re-render it every
+ * time anyone catches up on the room. A cap is worth having: the whole point
+ * of a note is a short, pointed thing a human wants on the record ("the
+ * client changed the deadline"), not a place to paste a document. 4,000
+ * characters is generous for that — several paragraphs — while still
+ * refusing the pathological case. Genuinely long material belongs in an
+ * artifact, pinned into the shared brief if it needs to be there, where it
+ * can be versioned and diffed instead of sitting as one immovable log entry.
+ */
+const NOTE_MAX_LENGTH = 4000;
+
+const NOTE_HELP = `Usage: atrium note <text> [dir] [--task <id>]
+
+Leaves a note in the log for the other members to read: something worth
+recording that is not a task and not an artifact — a decision, a correction,
+a change in plan nobody else in the room would otherwise find out about.
+
+"atrium log" already renders notes as readable lines, the same as everything
+else that happens in the room, so there is no separate command to read them
+back.
+
+Options:
+  --task <id>  attach this note to a task. Refused if the task does not
+               exist, since a note pointing at a task id that was never
+               created would be a dangling reference the log carries forever.
+  --help, -h   show this help
+
+An empty or whitespace-only note is refused: there is nothing to record.
+Notes over ${NOTE_MAX_LENGTH} characters are refused too (see the source
+comment on NOTE_MAX_LENGTH for the reasoning) — put long material in an
+artifact instead, and note a pointer to it.
+`;
+
+export function cmdNote(argv: string[], sink: Sink): number {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: {
+      help: { type: "boolean", short: "h" },
+      task: { type: "string" },
+    },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(NOTE_HELP);
+    return 0;
+  }
+
+  const text = positionals[0];
+  if (text === undefined || text.trim() === "") {
+    sink.err('note needs text to record, e.g. atrium note "the client changed the deadline".');
+    return 2;
+  }
+  if (text.length > NOTE_MAX_LENGTH) {
+    sink.err(
+      `A note can be at most ${NOTE_MAX_LENGTH} characters (got ${text.length}). ` +
+        "Put long-form material in an artifact instead, and note just a pointer to it.",
+    );
+    return 2;
+  }
+  if (values.task !== undefined && values.task.trim() === "") {
+    sink.err('--task needs a task id, e.g. --task task_abc123.');
+    return 2;
+  }
+
+  const dir = positionals[1] ?? process.cwd();
+  const room = openRoom(dir);
+  try {
+    const actorId = ensureCliHuman(room);
+
+    // Checked before the append, the same way createTask validates a
+    // dependsOn id against the board before recording it: a note naming a
+    // task id that does not exist is a dangling reference the log would
+    // carry forever, so this is refused rather than recorded. getTask throws
+    // NotFoundError for a bogus id, which runCli turns into a clear message.
+    if (values.task !== undefined) getTask(room, values.task);
+
+    room.assertUsable();
+    const event = room.log.append(actorId, "note.posted", {
+      memberId: actorId,
+      text,
+      ...(values.task !== undefined ? { taskId: values.task } : {}),
+    });
+    sink.out(values.task !== undefined ? `Noted on ${values.task} (#${event.seq}).` : `Noted (#${event.seq}).`);
+    return 0;
+  } finally {
+    room.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // cost
 // ---------------------------------------------------------------------------
 
@@ -2009,6 +2127,7 @@ Commands:
   replay <seq> [dir]    the board as it looked at that point in the log
   context [dir]         the shared brief and its token total; --pin/--unpin to curate it
   search <query> [dir]  full-text search over the room's artifacts
+  note <text> [dir]     leave a note in the log, optionally attached to a task
   cost [dir]            per-member and room spend totals against the caps
   config [dir]          list room settings; "atrium config <key> <value> [dir]" changes one
   history <path> [dir]  every version an artifact has had
@@ -2058,6 +2177,8 @@ function dispatch(argv: string[], sink: Sink): number {
       return cmdContext(rest, sink);
     case "search":
       return cmdSearch(rest, sink);
+    case "note":
+      return cmdNote(rest, sink);
     case "cost":
       return cmdCost(rest, sink);
     case "config":
