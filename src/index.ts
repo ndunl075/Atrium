@@ -26,6 +26,7 @@ export {
   listTasks,
   getTask,
   claimTask,
+  renewClaim,
   releaseTask,
   restartTask,
   sweepExpiredClaims,

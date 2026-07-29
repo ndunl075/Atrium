@@ -34,8 +34,10 @@ import {
   cmdServe,
   cmdTaskAdd,
   cmdTaskRelease,
+  cmdTaskRenew,
   cmdTaskReview,
   cmdTaskShow,
+  cmdTaskSweep,
   cmdTaskUnblock,
   runCli,
   type Sink,
@@ -1639,6 +1641,126 @@ describe("task release", () => {
     const show = sink();
     cmdTaskShow(["--json", task.id, dir], show);
     expect(JSON.parse(show.outLines.join("\n")).state).toBe("open");
+  });
+});
+
+describe("task renew", () => {
+  it("extends a claim held by the CLI's own human identity", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+    const { dir, room } = tempRoom({ config: { claimSeconds: 60 } });
+    // "cli" is the CLI's own auto-provisioned identity (ensureCliHuman).
+    // Joining it by hand here and giving it a claim is the only way to make
+    // "atrium task renew" actually succeed in a test: claiming a task
+    // happens over MCP as a worker, and there is no "atrium task claim"
+    // command, which is exactly what this command's help text warns is the
+    // unusual case.
+    const cli = room.join({ name: "cli", role: "human" }).member;
+    const task = createTask(room, cli.id, { title: "draft" });
+    claimTask(room, cli.id, task.id);
+
+    vi.setSystemTime(new Date("2026-01-01T00:00:30.000Z"));
+    const s = sink();
+    const code = cmdTaskRenew([task.id, dir], s);
+
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/renewed/);
+
+    // Past the original 60-second window, still claimed by the same holder.
+    vi.setSystemTime(new Date("2026-01-01T00:01:15.000Z"));
+    const show = sink();
+    cmdTaskShow(["--json", task.id, dir], show);
+    expect(JSON.parse(show.outLines.join("\n")).state).toBe("claimed");
+  });
+
+  it("refuses a claim held by somebody else", () => {
+    const { dir, room } = tempRoom();
+    const scout = room.join({ name: "scout", role: "worker" }).member;
+    const task = createTask(room, scout.id, { title: "draft" });
+    claimTask(room, scout.id, task.id);
+
+    const s = sink();
+    const code = runCli(["task", "renew", task.id, dir], s);
+
+    expect(code).not.toBe(0);
+    expect(s.errLines.join("\n")).toMatch(/not you/);
+  });
+
+  it("refuses a task that was never claimed", () => {
+    const { dir, room } = tempRoom();
+    const scout = room.join({ name: "scout", role: "worker" }).member;
+    const task = createTask(room, scout.id, { title: "draft" });
+
+    const s = sink();
+    const code = runCli(["task", "renew", task.id, dir], s);
+
+    expect(code).not.toBe(0);
+    expect(s.errLines.join("\n")).toMatch(/not claimed/);
+  });
+
+  it("refuses a claim that already lapsed, and does not resurrect it", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+    const { dir, room } = tempRoom({ config: { claimSeconds: 60 } });
+    const cli = room.join({ name: "cli", role: "human" }).member;
+    const task = createTask(room, cli.id, { title: "draft" });
+    claimTask(room, cli.id, task.id);
+
+    vi.setSystemTime(new Date("2026-01-01T00:02:00.000Z"));
+    const s = sink();
+    const code = runCli(["task", "renew", task.id, dir], s);
+
+    expect(code).not.toBe(0);
+    expect(s.errLines.join("\n")).toMatch(/expired/);
+
+    // Left exactly as open as the live board already showed; somebody else
+    // can claim it fresh through the ordinary path.
+    const other = room.join({ name: "other", role: "worker" }).member;
+    expect(claimTask(room, other.id, task.id).claimedBy).toBe(other.id);
+  });
+});
+
+describe("task sweep", () => {
+  it("reclaims a lapsed claim and records it in the log, and is harmless to run again", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+    const { dir, room } = tempRoom({ config: { claimSeconds: 60 } });
+    const scout = room.join({ name: "scout", role: "worker" }).member;
+    const task = createTask(room, scout.id, { title: "draft" });
+    claimTask(room, scout.id, task.id);
+
+    vi.setSystemTime(new Date("2026-01-01T00:05:00.000Z"));
+
+    const s = sink();
+    const code = cmdTaskSweep([dir], s);
+
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/reclaimed/i);
+    expect(s.outLines.join("\n")).toContain(task.id);
+
+    const lines = describeHistory(room).map((h) => h.line);
+    expect(lines.some((l) => l.includes("claim expired"))).toBe(true);
+
+    const again = sink();
+    const code2 = cmdTaskSweep([dir], again);
+    expect(code2).toBe(0);
+    expect(again.outLines.join("\n")).toMatch(/nothing to sweep/i);
+  });
+
+  it("reports nothing to sweep when no claims have lapsed", () => {
+    const { dir, room } = tempRoom();
+    const scout = room.join({ name: "scout", role: "worker" }).member;
+    const task = createTask(room, scout.id, { title: "draft" });
+    claimTask(room, scout.id, task.id);
+
+    const s = sink();
+    const code = cmdTaskSweep([dir], s);
+
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/nothing to sweep/i);
   });
 });
 

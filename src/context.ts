@@ -303,6 +303,9 @@ function describeEvent(
     case "task.claimed":
       return `${actorName(event.data.memberId)} claimed ${taskLabel(event.data.taskId)}.`;
 
+    case "task.claim_renewed":
+      return `${actorName(event.data.memberId)} renewed the claim on ${taskLabel(event.data.taskId)}.`;
+
     case "task.released":
       return `${actorName(event.data.memberId)} released ${taskLabel(event.data.taskId)} (${
         event.data.reason === "lease-expired" ? "claim expired" : "voluntarily"

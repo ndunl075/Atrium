@@ -138,6 +138,7 @@ describe("tools/list", () => {
       "search_artifacts",
       "list_tasks",
       "claim_task",
+      "renew_claim",
       "read_artifact",
       "write_artifact",
       "submit_task",
@@ -241,6 +242,83 @@ describe("the rule that nobody signs off their own work, through the tools", () 
 
     expect(isError).toBe(false);
     expect(data.state).toBe("accepted");
+  });
+});
+
+describe("renew_claim", () => {
+  it("extends a claim's expiry so it survives past the original window", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+    const room = tempRoom({ config: { claimSeconds: 60 } });
+    const server = new RoomServer(room);
+    await call(server, "join", { name: "scout", role: "worker" });
+
+    const { data: task } = await call(server, "create_task", { title: "draft" });
+    await call(server, "claim_task", { task_id: task.id });
+
+    vi.setSystemTime(new Date("2026-01-01T00:00:30.000Z"));
+    const renewed = await call(server, "renew_claim", { task_id: task.id });
+    expect(renewed.isError).toBe(false);
+    expect(renewed.data.claimExpiresAt).toBe("2026-01-01T00:01:30.000Z");
+
+    // Past the original expiry, still claimed by the same worker.
+    vi.setSystemTime(new Date("2026-01-01T00:01:15.000Z"));
+    const { data: still } = await call(server, "get_task", { task_id: task.id });
+    expect(still.state).toBe("claimed");
+    expect(still.claimedBy).toBe(renewed.data.claimedBy);
+  });
+
+  it("refuses a member that never held the claim", async () => {
+    const room = tempRoom();
+    const alice = new RoomServer(room);
+    const bob = new RoomServer(room);
+    await call(alice, "join", { name: "alice", role: "worker" });
+    await call(bob, "join", { name: "bob", role: "worker" });
+
+    const { data: task } = await call(alice, "create_task", { title: "draft" });
+    await call(alice, "claim_task", { task_id: task.id });
+
+    const { data, isError } = await call(bob, "renew_claim", { task_id: task.id });
+    expect(isError).toBe(true);
+    expect(data.error).toBe("permission");
+  });
+
+  it("refuses a task that was never claimed", async () => {
+    const room = tempRoom();
+    const server = new RoomServer(room);
+    await call(server, "join", { name: "scout", role: "worker" });
+    const { data: task } = await call(server, "create_task", { title: "draft" });
+
+    const { data, isError } = await call(server, "renew_claim", { task_id: task.id });
+    expect(isError).toBe(true);
+    expect(data.error).toBe("invalid");
+    expect(data.message).toMatch(/not claimed/);
+  });
+
+  it("refuses a claim that already lapsed, distinctly, and does not resurrect it", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+    const room = tempRoom({ config: { claimSeconds: 60 } });
+    const server = new RoomServer(room);
+    await call(server, "join", { name: "scout", role: "worker" });
+    const { data: task } = await call(server, "create_task", { title: "draft" });
+    await call(server, "claim_task", { task_id: task.id });
+
+    vi.setSystemTime(new Date("2026-01-01T00:02:00.000Z"));
+    const { data, isError } = await call(server, "renew_claim", { task_id: task.id });
+
+    expect(isError).toBe(true);
+    expect(data.error).toBe("conflict");
+    expect(data.message).toMatch(/expired/);
+
+    // Somebody else can claim it fresh — renewClaim's refusal did not leave
+    // the task wedged claimed-but-unrenewable.
+    const other = new RoomServer(room);
+    await call(other, "join", { name: "other", role: "worker" });
+    const taken = await call(other, "claim_task", { task_id: task.id });
+    expect(taken.isError).toBe(false);
   });
 });
 

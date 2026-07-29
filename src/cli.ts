@@ -46,10 +46,12 @@ import {
   pruneVersions,
   releaseLease,
   releaseTask,
+  renewClaim,
   resolveArtifact,
   restartTask,
   reviewTask,
   searchArtifacts,
+  sweepExpiredClaims,
   toArtifactPath,
   unpinArtifact,
   verifyRoom,
@@ -2243,6 +2245,60 @@ export function cmdTaskRelease(argv: string[], sink: Sink): number {
   }
 }
 
+const TASK_RENEW_HELP = `Usage: atrium task renew <id> <room>
+
+Extends a claim before it lapses, going through the same renewClaim path
+"renew_claim" uses over MCP: only the member actually holding the claim can
+renew it, with no human override the way "atrium task release" and "atrium
+lease release" have one — see renewClaim's own doc comment in board.ts for
+why that is the whole point of the function.
+
+That makes this command narrower than it looks. Task claims are almost
+always held by an MCP worker, not by the CLI's own auto-provisioned "cli"
+human identity — there is no "atrium task claim" command, so "cli" only
+ever holds a claim if something outside the CLI put it there. Run this as
+whichever member id actually holds the claim, over MCP, if that is what you
+mean; this command exists for symmetry with the rest of "atrium task" and
+for the case where "cli" genuinely is the holder.
+
+Refuses with a distinct message for each of: no claim on the task at all, a
+claim held by somebody else, and a claim that already lapsed — in the last
+case the task is already back on the board and this will not resurrect the
+old claim; claim it again instead.
+
+Options:
+  --help, -h   show this help
+`;
+
+export function cmdTaskRenew(argv: string[], sink: Sink): number {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: { help: { type: "boolean", short: "h" } },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(TASK_RENEW_HELP);
+    return 0;
+  }
+
+  const taskId = positionals[0];
+  if (taskId === undefined) {
+    sink.err('task renew needs a task id, e.g. "atrium task renew task_abc123 ./room".');
+    return 2;
+  }
+  const dir = positionals[1] ?? process.cwd();
+
+  const room = openRoom(dir);
+  try {
+    const actorId = ensureCliHuman(room);
+    const task = renewClaim(room, actorId, taskId);
+    sink.out(`${taskId} renewed; claim now expires ${task.claimExpiresAt}.`);
+    return 0;
+  } finally {
+    room.close();
+  }
+}
+
 const TASK_UNBLOCK_HELP = `Usage: atrium task unblock <id> <room>
 
 Restarts a task that froze after too many rejections. ARCHITECTURE.md §6:
@@ -2283,6 +2339,63 @@ export function cmdTaskUnblock(argv: string[], sink: Sink): number {
   }
 }
 
+const TASK_SWEEP_HELP = `Usage: atrium task sweep [room]
+
+Reclaims every task whose claim has already lapsed, appending a
+task.released event (reason "lease-expired") for each one so the log
+records the reclamation explicitly rather than leaving it implicit in
+foldTasks's rule that a lapsed claim reads as open again (ARCHITECTURE.md
+§6). This changes nothing about what is claimable right now — that rule
+already applies with or without anyone running this — it only makes the
+"why did this come back on the board" answer sit in the log instead of
+having to be inferred from a claim's expiry no longer being live.
+
+A room with nothing lapsed is a normal, successful result, not an error.
+Running this twice in a row is harmless: the second run finds nothing left
+to sweep, the same guarantee sweepExpiredClaims documents in board.ts.
+
+Options:
+  --json       print the reclaimed tasks as machine-readable JSON instead
+  --help, -h   show this help
+`;
+
+export function cmdTaskSweep(argv: string[], sink: Sink): number {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: {
+      help: { type: "boolean", short: "h" },
+      json: { type: "boolean" },
+    },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(TASK_SWEEP_HELP);
+    return 0;
+  }
+
+  const dir = positionals[0] ?? process.cwd();
+  const room = openRoom(dir);
+  try {
+    const reclaimed = sweepExpiredClaims(room);
+
+    if (values.json) {
+      sink.out(JSON.stringify(reclaimed, null, 2));
+      return 0;
+    }
+    if (reclaimed.length === 0) {
+      sink.out(dim("Nothing to sweep; no claims have lapsed."));
+      return 0;
+    }
+    sink.out(
+      `Reclaimed ${reclaimed.length} lapsed claim${reclaimed.length === 1 ? "" : "s"}: ` +
+        `${reclaimed.map((t) => t.id).join(", ")}.`,
+    );
+    return 0;
+  } finally {
+    room.close();
+  }
+}
+
 const TASK_HELP = `Usage: atrium task <subcommand> [options]
 
 Subcommands:
@@ -2290,7 +2403,9 @@ Subcommands:
   show <id> <room> [--json]             full detail on one task
   review <id> <room> --accept|--reject  a human verdict on submitted work
   release <id> <room>                   force a claimed task back to the board
+  renew <id> <room>                     extend a claim you hold before it lapses
   unblock <id> <room>                   restart a task frozen by escalation
+  sweep [room]                          reclaim every lapsed claim, recorded in the log
 
 Run "atrium task <subcommand> --help" for details on any one.
 `;
@@ -2312,8 +2427,12 @@ export function cmdTask(argv: string[], sink: Sink): number {
       return cmdTaskReview(rest, sink);
     case "release":
       return cmdTaskRelease(rest, sink);
+    case "renew":
+      return cmdTaskRenew(rest, sink);
     case "unblock":
       return cmdTaskUnblock(rest, sink);
+    case "sweep":
+      return cmdTaskSweep(rest, sink);
     default:
       sink.err(`Unknown "atrium task" subcommand "${sub}". Run "atrium task --help" for the list.`);
       return 2;

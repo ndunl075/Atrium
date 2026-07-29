@@ -170,6 +170,13 @@ export interface EventMap {
     acceptance: Acceptance;
   };
   "task.claimed": { taskId: TaskId; memberId: MemberId; expiresAt: string };
+  /**
+   * The holder extending a claim it already has, before it lapses. Never
+   * changes who holds the claim — `renewClaim` in board.ts only lets the
+   * current holder call it — so folding this only ever moves `claimExpiresAt`
+   * forward, the same way `lease.renewed` only ever moves a lease's.
+   */
+  "task.claim_renewed": { taskId: TaskId; memberId: MemberId; expiresAt: string };
   "task.released": {
     taskId: TaskId;
     memberId: MemberId;
@@ -282,6 +289,7 @@ const EVENT_TYPE_REGISTRY: Record<EventType, true> = {
   "member.left": true,
   "task.created": true,
   "task.claimed": true,
+  "task.claim_renewed": true,
   "task.released": true,
   "task.blocked": true,
   "task.unblocked": true,

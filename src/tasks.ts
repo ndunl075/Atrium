@@ -82,6 +82,16 @@ export function foldTasks(
         break;
       }
 
+      case "task.claim_renewed": {
+        const task = tasks.get(event.data.taskId);
+        if (!task) break;
+        // Only the expiry moves. renewClaim only ever lets the existing
+        // holder call this, so claimedBy and claimedAt are untouched.
+        task.claimExpiresAt = event.data.expiresAt;
+        task.seq = event.seq;
+        break;
+      }
+
       case "task.released": {
         const task = tasks.get(event.data.taskId);
         if (!task) break;

@@ -17,6 +17,7 @@ import {
   getTask,
   listTasks,
   releaseTask,
+  renewClaim,
   sweepExpiredClaims,
 } from "./board.js";
 
@@ -345,6 +346,107 @@ describe("releasing", () => {
     const task = createTask(room, worker.id, { title: "draft" });
 
     expect(() => releaseTask(room, worker.id, task.id)).toThrow(InvalidError);
+  });
+});
+
+describe("renewClaim", () => {
+  it("extends the expiry and keeps the task claimed past its original window", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+    const room = tempRoom({ config: { claimSeconds: 60 } });
+    const worker = room.join({ name: "scout", role: "worker" }).member;
+    const task = createTask(room, worker.id, { title: "draft" });
+    claimTask(room, worker.id, task.id);
+
+    // Halfway through the original window, renew it.
+    vi.setSystemTime(new Date("2026-01-01T00:00:30.000Z"));
+    const renewed = renewClaim(room, worker.id, task.id);
+    expect(renewed.claimExpiresAt).toBe("2026-01-01T00:01:30.000Z");
+    expect(renewed.claimedBy).toBe(worker.id);
+    expect(renewed.state).toBe("claimed");
+
+    // Past the original expiry (00:01:00) but within the renewed one: still
+    // claimed, and still by the same worker — the whole point of renewing.
+    vi.setSystemTime(new Date("2026-01-01T00:01:15.000Z"));
+    expect(getTask(room, task.id).state).toBe("claimed");
+    expect(getTask(room, task.id).claimedBy).toBe(worker.id);
+
+    const other = room.join({ name: "other", role: "worker" }).member;
+    expect(() => claimTask(room, other.id, task.id)).toThrow(ConflictError);
+  });
+
+  it("refuses a non-holder, distinctly from an unclaimed task", () => {
+    const room = tempRoom();
+    const worker = room.join({ name: "scout", role: "worker" }).member;
+    const other = room.join({ name: "other", role: "worker" }).member;
+    const task = createTask(room, worker.id, { title: "draft" });
+    claimTask(room, worker.id, task.id);
+
+    expect(() => renewClaim(room, other.id, task.id)).toThrow(
+      PermissionError,
+    );
+    expect(() => renewClaim(room, other.id, task.id)).toThrow(/not you/);
+  });
+
+  it("refuses a task that was never claimed", () => {
+    const room = tempRoom();
+    const worker = room.join({ name: "scout", role: "worker" }).member;
+    const task = createTask(room, worker.id, { title: "draft" });
+
+    expect(() => renewClaim(room, worker.id, task.id)).toThrow(InvalidError);
+    expect(() => renewClaim(room, worker.id, task.id)).toThrow(/not claimed/);
+  });
+
+  it("refuses an unknown task id", () => {
+    const room = tempRoom();
+    const worker = room.join({ name: "scout", role: "worker" }).member;
+
+    expect(() => renewClaim(room, worker.id, "task_does_not_exist")).toThrow(
+      NotFoundError,
+    );
+  });
+
+  it("refuses a claim that has already lapsed, distinctly from the other two cases, and does not resurrect it", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+    const room = tempRoom({ config: { claimSeconds: 60 } });
+    const worker = room.join({ name: "scout", role: "worker" }).member;
+    const task = createTask(room, worker.id, { title: "draft" });
+    claimTask(room, worker.id, task.id);
+
+    // Past the claim's expiry: the board already reads this as open.
+    vi.setSystemTime(new Date("2026-01-01T00:02:00.000Z"));
+    expect(getTask(room, task.id).state).toBe("open");
+
+    let error: unknown;
+    try {
+      renewClaim(room, worker.id, task.id);
+    } catch (err) {
+      error = err;
+    }
+    expect(error).toBeInstanceOf(ConflictError);
+    expect((error as ConflictError).message).toMatch(/expired/);
+    expect((error as ConflictError).message).not.toMatch(/not claimed/);
+    expect((error as ConflictError).message).not.toMatch(/not you/);
+
+    // Refusing it left the task open, exactly as the live board already
+    // showed — renewClaim did not quietly extend a claim that had died.
+    expect(getTask(room, task.id).state).toBe("open");
+
+    // Somebody else can now claim it fresh, through the ordinary CAS path —
+    // renewClaim pointed here rather than reviving the old claim itself.
+    const other = room.join({ name: "other", role: "worker" }).member;
+    const reclaimed = claimTask(room, other.id, task.id);
+    expect(reclaimed.claimedBy).toBe(other.id);
+
+    // And the original holder trying to renew now correctly sees "claimed by
+    // somebody else", not "already lapsed" — the lapse is old news once a new
+    // claim exists.
+    expect(() => renewClaim(room, worker.id, task.id)).toThrow(
+      PermissionError,
+    );
   });
 });
 
