@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,6 +8,7 @@ import { Room } from "./room.js";
 import { acquireLease } from "./leases.js";
 import { writeArtifact } from "./artifacts.js";
 import { createTask } from "./board.js";
+import { pinArtifact } from "./context.js";
 import { pruneVersions } from "./snapshots.js";
 
 const created: Array<{ room: Room; dir: string }> = [];
@@ -108,6 +109,64 @@ describe("serveWatch", () => {
     expect(body).not.toMatch(/src="https?:\/\//);
     expect(body).not.toMatch(/href="https?:\/\//);
     expect(body).not.toContain("cdn.");
+  });
+});
+
+describe("the brief (Tier 1 context)", () => {
+  it("shows the room's actual CONTEXT.md text", async () => {
+    const room = tempRoom();
+    writeFileSync(
+      room.paths.context,
+      "# Welcome\n\nThis room drafts the launch post.\n",
+      "utf8",
+    );
+
+    const { body } = await get(await start(room));
+    expect(body).toContain("This room drafts the launch post.");
+  });
+
+  it("escapes HTML in the brief rather than rendering it", async () => {
+    const room = tempRoom();
+    writeFileSync(room.paths.context, `<img src=x onerror=alert(1)>`, "utf8");
+
+    const { body } = await get(await start(room));
+    expect(body).not.toContain("<img src=x");
+    expect(body).toContain("&lt;img src=x onerror=alert(1)&gt;");
+  });
+
+  it("says the brief is empty rather than drawing an empty box, for a fresh room", async () => {
+    const room = tempRoom();
+    writeFileSync(room.paths.context, "", "utf8");
+
+    const { body } = await get(await start(room));
+    expect(body).toContain("CONTEXT.md is empty");
+  });
+
+  it("shows a pinned artifact with its path and a link to its diff view", async () => {
+    const room = tempRoom();
+    const w = room.join({ name: "w", role: "worker" }).member;
+    acquireLease(room, w.id, "notes.md");
+    writeArtifact(room, w.id, "notes.md", "first draft of the notes\n");
+    writeArtifact(room, w.id, "notes.md", "second draft of the notes\n");
+    pinArtifact(room, w.id, "notes.md");
+
+    const { body } = await get(await start(room));
+
+    expect(body).toContain("notes.md");
+    expect(body).toContain("second draft of the notes");
+    expect(body).toContain(`href="/diff?path=notes.md"`);
+  });
+
+  it("makes an over-ceiling context total obvious rather than clamping it", async () => {
+    // Room.create's own CONTEXT.md is already bigger than a ceiling of 5
+    // tokens, the same fixture context.test.ts uses to prove getContext
+    // reports the real total instead of hiding it.
+    const room = tempRoom({ config: { contextTokenCeiling: 5 } });
+
+    const { body } = await get(await start(room));
+
+    expect(body).toContain(`class="pill rejected"`);
+    expect(body).toContain("over ceiling");
   });
 });
 
