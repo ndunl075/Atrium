@@ -10,6 +10,7 @@ import { writeArtifact } from "./artifacts.js";
 import { createTask } from "./board.js";
 import { pinArtifact } from "./context.js";
 import { pruneVersions } from "./snapshots.js";
+import { reportCost } from "./cost.js";
 
 const created: Array<{ room: Room; dir: string }> = [];
 const servers: WatchServerHandle[] = [];
@@ -45,6 +46,31 @@ async function start(room: Room, pollMs = 25): Promise<WatchServerHandle> {
 async function get(handle: WatchServerHandle, path = "/"): Promise<{ status: number; body: string }> {
   const res = await fetch(new URL(path, handle.url));
   return { status: res.status, body: await res.text() };
+}
+
+/**
+ * Reads an open SSE response until `until` is satisfied or a deadline passes,
+ * the same "keep reading past the keep-alive comment frames" pattern the
+ * existing live-stream tests already use, generalised so the new tests below
+ * can wait for a named event (`event: board`, `event: meta`, ...) instead of
+ * just a line of text.
+ */
+async function collectSse(
+  res: Response,
+  until: (text: string) => boolean,
+  timeoutMs = 2000,
+): Promise<string> {
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let seen = "";
+  const deadline = Date.now() + timeoutMs;
+  while (!until(seen) && Date.now() < deadline) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    seen += decoder.decode(value, { stream: true });
+  }
+  await reader.cancel();
+  return seen;
 }
 
 describe("escapeHtml", () => {
@@ -325,5 +351,130 @@ describe("live event stream", () => {
 
     const { done } = await reader.read().catch(() => ({ done: true }));
     expect(done === true || done === false).toBe(true);
+  });
+});
+
+describe("the live board", () => {
+  it("still serves the full board, roster, artifacts and brief on first paint, before any script runs", async () => {
+    const room = tempRoom();
+    const scout = room.join({ name: "scout", role: "worker" }).member;
+    createTask(room, scout.id, { title: "Draft the opening" });
+
+    const { body } = await get(await start(room));
+
+    // These are the containers the live stream later swaps into; first paint
+    // has to hold real content in every one of them, not an empty shell that
+    // JavaScript is trusted to fill in.
+    expect(body).toMatch(/<div id="board">[\s\S]*Draft the opening[\s\S]*<\/div>/);
+    expect(body).toMatch(/<div id="roster">[\s\S]*scout[\s\S]*<\/div>/);
+    expect(body).toContain('<div id="artifacts">');
+    expect(body).toContain('<div id="brief">');
+    expect(body).toContain('id="hdr-members"');
+    expect(body).toContain('id="hdr-tasks"');
+    expect(body).toContain('id="hdr-tokens"');
+    expect(body).toContain('id="hdr-head"');
+  });
+
+  it("pushes a re-rendered board fragment over the stream when a task event happens", async () => {
+    const room = tempRoom();
+    const handle = await start(room, 20);
+    const worker = room.join({ name: "worker", role: "worker" }).member;
+
+    const res = await fetch(new URL(`/events?from=${room.log.head()}`, handle.url));
+    createTask(room, worker.id, { title: "Draft the opening" });
+
+    const seen = await collectSse(res, (t) => t.includes("event: board"));
+
+    expect(seen).toContain("event: board");
+    expect(seen).toContain("Draft the opening");
+  });
+
+  it("escapes attacker-controlled content in a fragment pushed live, the same as first paint", async () => {
+    const room = tempRoom();
+    const handle = await start(room, 20);
+    const worker = room.join({ name: "worker", role: "worker" }).member;
+
+    const res = await fetch(new URL(`/events?from=${room.log.head()}`, handle.url));
+    createTask(room, worker.id, { title: `</h1><script>alert(2)</script>` });
+
+    const seen = await collectSse(res, (t) => t.includes("event: board"));
+
+    // The raw log line (a separate, unnamed SSE message) carries the title
+    // verbatim on purpose: the client inserts it with textContent, never
+    // innerHTML, exactly like renderLogLine's own escaping is beside the
+    // point for that path. The board fragment is different — it is HTML the
+    // client drops in with innerHTML — so it is that payload specifically,
+    // not the whole SSE transcript, that must never carry the raw tag.
+    const boardPayload = seen.match(/event: board\ndata: (.*)\n/)?.[1] ?? "";
+    expect(boardPayload).not.toContain("<script>alert(2)</script>");
+    expect(boardPayload).toContain("&lt;script&gt;alert(2)&lt;/script&gt;");
+  });
+
+  it("pushes a roster fragment and updated header counts when a member joins", async () => {
+    const room = tempRoom();
+    const handle = await start(room, 20);
+
+    const res = await fetch(new URL(`/events?from=${room.log.head()}`, handle.url));
+    room.join({ name: "newcomer", role: "worker" });
+
+    const seen = await collectSse(res, (t) => t.includes("event: meta"));
+
+    expect(seen).toContain("event: roster");
+    expect(seen).toContain("newcomer");
+    expect(seen).toContain("event: meta");
+    expect(seen).toMatch(/"members":"1 member"/);
+  });
+
+  it("pushes an artifacts fragment, and the brief along with it, when a pinned artifact changes", async () => {
+    const room = tempRoom();
+    const handle = await start(room, 20);
+    const w = room.join({ name: "w", role: "worker" }).member;
+    acquireLease(room, w.id, "notes.md");
+    writeArtifact(room, w.id, "notes.md", "first draft\n");
+    pinArtifact(room, w.id, "notes.md");
+
+    const res = await fetch(new URL(`/events?from=${room.log.head()}`, handle.url));
+    writeArtifact(room, w.id, "notes.md", "second draft, now longer\n");
+
+    const seen = await collectSse(res, (t) => t.includes("event: brief"));
+
+    expect(seen).toContain("event: artifacts");
+    expect(seen).toContain("event: brief");
+    expect(seen).toContain("second draft, now longer");
+  });
+
+  it("pushes the halted banner over the stream the moment the room halts", async () => {
+    const room = tempRoom({ config: { actionBudget: 2 } });
+    const handle = await start(room, 20);
+
+    const res = await fetch(new URL(`/events?from=${room.log.head()}`, handle.url));
+    room.join({ name: "a", role: "worker" });
+    expect(() => room.join({ name: "b", role: "worker" })).toThrow();
+
+    const seen = await collectSse(res, (t) => t.includes("event: halted"));
+
+    expect(seen).toContain("event: halted");
+    expect(seen).toContain("This room has halted");
+  });
+
+  it("does not re-render the board, roster, artifacts or brief for an event none of them fold", async () => {
+    const room = tempRoom();
+    const handle = await start(room, 20);
+    const w = room.join({ name: "worker", role: "worker" }).member;
+
+    const res = await fetch(new URL(`/events?from=${room.log.head()}`, handle.url));
+    reportCost(room, w.id, { amountUsd: 1.5 });
+
+    // The cost report still shows up as a log line...
+    const seen = await collectSse(res, (t) => t.includes("reported $1.50"));
+    expect(seen).toContain("reported $1.50");
+
+    // ...but a cost report doesn't fold into anything the board shows, so
+    // none of the region events should have fired for it.
+    expect(seen).not.toContain("event: board");
+    expect(seen).not.toContain("event: roster");
+    expect(seen).not.toContain("event: artifacts");
+    expect(seen).not.toContain("event: brief");
+    expect(seen).not.toContain("event: halted");
   });
 });

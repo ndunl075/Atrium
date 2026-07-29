@@ -35,6 +35,15 @@ export interface HistoryLine {
   ts: string;
   actor: MemberId | "system";
   line: string;
+  /**
+   * The event type this line was folded from. `describeHistory` exists to
+   * turn the log into prose, but a reader that already has the prose (the
+   * watch UI's live stream, see watch.ts) still needs to know what *kind* of
+   * thing happened, to decide whether a folded view like the board needs
+   * re-drawing. Carrying it here means that decision does not require a
+   * second read of the log to recover a field this one already had.
+   */
+  type: EventType;
 }
 
 /**
@@ -252,6 +261,7 @@ export function describeHistory(
     ts: event.ts,
     actor: event.actor,
     line: describeEvent(event, actorName, taskLabel),
+    type: event.type,
   }));
 
   if (contains !== undefined) {
