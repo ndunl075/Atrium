@@ -107,6 +107,12 @@ export {
   type HttpServerHandle,
 } from "./http.js";
 export {
+  serveWatch,
+  escapeHtml,
+  type ServeWatchOptions,
+  type WatchServerHandle,
+} from "./watch.js";
+export {
   foldCosts,
   spendTotals,
   costSummary,

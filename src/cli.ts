@@ -49,6 +49,7 @@ import {
   unpinArtifact,
 } from "./index.js";
 import { serveHttp } from "./http.js";
+import { serveWatch } from "./watch.js";
 import { serveStdio } from "./mcp.js";
 import type { Acceptance, Member, MemberId, MemberRole, Task, TaskState, Verdict } from "./index.js";
 
@@ -1709,6 +1710,7 @@ Commands:
   prune [dir]           drop the content of old artifact versions (destructive)
   leases [dir]          every path currently under lease: holder, acquired, expires, time left
   serve [dir]           serve the room to an MCP client over stdin/stdout
+  watch [dir]           a read-only web view of the room, live in a browser
   task <subcommand>     create, inspect, and administer tasks — see "atrium task --help"
   roster [dir]          every member who has joined, with tags and self-reported manifest
 
@@ -1902,6 +1904,75 @@ export async function cmdServe(argv: string[], sink: Sink): Promise<number> {
   }
 }
 
+const WATCH_HELP = `atrium watch — a read-only web view of a running room
+
+Usage: atrium watch [dir] [options]
+
+Opens a local web page showing the board, the members, the artifacts, and the
+event log as it happens. Nothing here can change the room: the server refuses
+every method except GET, and no page it serves writes anything.
+
+This runs on its own port, separate from "atrium serve --http", and needs no
+token. That is only safe because it binds to 127.0.0.1 by default — anything
+running on this machine can read the room through it while it is open. Passing
+--host to bind wider publishes the room's briefs, drafts and diffs to whoever
+can reach the port. Do that deliberately or not at all.
+
+Options:
+  --port <n>   port to listen on (default: any free port)
+  --host <h>   interface to bind (default: 127.0.0.1)
+  --help, -h   show this help
+`;
+
+export async function cmdWatch(argv: string[], sink: Sink): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: {
+      help: { type: "boolean", short: "h" },
+      port: { type: "string" },
+      host: { type: "string" },
+    },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(WATCH_HELP);
+    return 0;
+  }
+
+  let port: number | undefined;
+  if (values.port !== undefined) {
+    port = Number(values.port);
+    if (!Number.isInteger(port) || port < 0 || port > 65535) {
+      sink.err(`--port must be a whole number between 0 and 65535 (got "${values.port}").`);
+      return 2;
+    }
+  }
+
+  const room = openRoom(positionals[0] ?? process.cwd());
+  try {
+    const handle = await serveWatch(room, { port, host: values.host });
+    sink.out(`Watching ${room.config.name} at ${handle.url}`);
+    if (values.host !== undefined && values.host !== "127.0.0.1" && values.host !== "localhost") {
+      sink.out(
+        dim(`Bound to ${handle.host}, so this room is readable by anything that can reach it.`),
+      );
+    }
+    sink.out(dim("Read-only. Press Ctrl-C to stop."));
+
+    // Same shape as "serve --http": nothing ends this but a signal.
+    await new Promise<void>((resolve) => {
+      const shutdown = (): void => {
+        handle.close().then(resolve, resolve);
+      };
+      process.once("SIGINT", shutdown);
+      process.once("SIGTERM", shutdown);
+    });
+    return 0;
+  } finally {
+    room.close();
+  }
+}
+
 function main(): void {
   const sink: Sink = {
     out: (line) => process.stdout.write(line + "\n"),
@@ -1910,13 +1981,19 @@ function main(): void {
 
   const argv = process.argv.slice(2);
 
-  // serve is the one command that does not finish on its own, so it gets its
+  // serve and watch are the commands that do not finish on their own — one
+  // holds a protocol stream open, the other a web server — so they get their
   // own path rather than making every other command's handler async.
-  if (argv[0] === "serve") {
-    cmdServe(argv.slice(1), sink)
+  const longRunning: Record<string, (args: string[], sink: Sink) => Promise<number>> = {
+    serve: cmdServe,
+    watch: cmdWatch,
+  };
+  const run = argv[0] === undefined ? undefined : longRunning[argv[0]];
+  if (run) {
+    run(argv.slice(1), sink)
       .then((code) => process.exit(code))
       .catch((err: unknown) => {
-        sink.err(err instanceof Error ? err.message : String(err));
+        sink.err(isAtriumError(err) ? err.message : err instanceof Error ? err.message : String(err));
         process.exit(1);
       });
     return;
