@@ -140,3 +140,14 @@ export {
   type PruneResult,
   type PruneOptions,
 } from "./snapshots.js";
+export {
+  settingKeys,
+  isSettingKey,
+  listSettings,
+  parseSettingValue,
+  applyConfigChange,
+  type SettingKey,
+  type SettingListing,
+  type ParsedSettingValue,
+  type ConfigChangeResult,
+} from "./config.js";

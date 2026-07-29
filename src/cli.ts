@@ -25,6 +25,7 @@ import {
   isAtriumError,
   InvalidError,
   Room,
+  applyConfigChange,
   costSummary,
   createTask,
   currentLease,
@@ -36,6 +37,7 @@ import {
   getTask,
   listLeases,
   listPinned,
+  listSettings,
   listTasks,
   listVersions,
   pinArtifact,
@@ -752,6 +754,137 @@ export function cmdCost(argv: string[], sink: Sink): number {
     )) {
       sink.out(`  ${row}`);
     }
+    return 0;
+  } finally {
+    room.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// config
+// ---------------------------------------------------------------------------
+//
+// Room.updateConfig has worked since the room shipped and had no caller:
+// every setting that governs how this room behaves — action budget, lease
+// and claim lengths, max attempts, spend caps, the context ceiling, whether
+// unchecked acceptance is allowed at all — could only be changed by opening
+// .atrium/room.json in an editor. Several of Atrium's own refusals even say
+// to do exactly that (context.ts's "raise contextTokenCeiling in
+// .atrium/room.json"), which is really an admission that a command was
+// missing. This is that command. The coercion and rejection rules live in
+// config.ts, not here — this is the thin CLI wrapper around it, the same
+// division every other command in this file keeps with its own module.
+//
+// updateConfig writes straight to room.json without appending a log event —
+// a setting is state the room holds, not something that happened in it — so
+// unlike "atrium task" or "atrium context --pin", there is no identity for
+// this command to act as, and no ensureCliHuman call here.
+
+const CONFIG_HELP = `Usage: atrium config [dir]
+       atrium config <key> <value> [dir]
+
+With no key, lists every setting this room has: its current value, and
+whether that value is the shipped default or was set explicitly. With a
+key and a value, changes that one setting — the supported alternative to
+hand-editing .atrium/room.json.
+
+Values are coerced to the type the setting needs and rejected if they
+cannot be, or if they parse fine but would be meaningless (a lease of 0
+seconds, a negative action budget, zero max attempts). roomSpendCapUsd,
+memberSpendCapUsd, and retainVersionsPerPath are the exception: they use a
+documented "0 means no cap" convention, so 0 is accepted for those
+specifically rather than rejected as a nonsense count.
+
+Two changes print a warning on top of applying it, because "it worked"
+is not reassuring enough on its own for either: turning on
+allowUncheckedAcceptance (ARCHITECTURE.md §5 calls self-declared
+completion the failure this project exists to prevent), and lowering
+actionBudget to at or below the number of actions this room has already
+recorded (the room will halt on its very next action). Both are things a
+person is allowed to want on purpose, so neither is refused — only done
+loudly instead of quietly.
+
+Options:
+  --json       print the listing as machine-readable JSON (list mode only)
+  --help, -h   show this help
+`;
+
+export function cmdConfig(argv: string[], sink: Sink): number {
+  // A negative number is a value, not a flag. `parseArgs` cannot know that:
+  // it sees a leading "-" and refuses "-5" as an unknown option, so
+  // "atrium config actionBudget -5" would fail with a parser error about
+  // quoting rather than the validation message that actually explains what is
+  // wrong with -5. No option in this program starts with a digit, so a token
+  // matching a negative number is unambiguous, and marking it as positional
+  // lets it reach the validation that has something useful to say about it.
+  const args = argv.map((arg, i) => (i > 0 && /^-\d/.test(arg) ? ["--", arg] : [arg])).flat();
+
+  const { values, positionals } = parseArgs({
+    args,
+    options: {
+      help: { type: "boolean", short: "h" },
+      json: { type: "boolean" },
+    },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(CONFIG_HELP);
+    return 0;
+  }
+
+  // Arity, not a flag, tells list mode and set mode apart: "atrium config
+  // [dir]" takes at most one positional, while set mode always supplies a
+  // key and a value ahead of the optional trailing directory. "atrium diff"
+  // and "atrium task add" already share a directory positional with a
+  // command's own required arguments the same way.
+  if (positionals.length >= 2) {
+    if (positionals.length > 3) {
+      sink.err('Too many arguments for "atrium config <key> <value> [dir]".');
+      return 2;
+    }
+    const [key, value, dirArg] = positionals;
+    const dir = dirArg ?? process.cwd();
+    const room = openRoom(dir);
+    try {
+      let result;
+      try {
+        result = applyConfigChange(room, key!, value!);
+      } catch (err) {
+        // applyConfigChange throws for a library caller, which is right for
+        // it. Here the bad value came off a command line, which makes it a
+        // usage mistake rather than the room refusing something — the same
+        // category as "--keep must be a whole number" elsewhere in this file,
+        // and reported the same way rather than as a stack.
+        if (!isAtriumError(err)) throw err;
+        sink.err(err.message);
+        return 2;
+      }
+      sink.out(`${result.key} is now ${String(result.value)} (was ${String(result.previous)}).`);
+      for (const warning of result.warnings) sink.out(red(`Warning: ${warning}`));
+      return 0;
+    } finally {
+      room.close();
+    }
+  }
+
+  const dir = positionals[0] ?? process.cwd();
+  const room = openRoom(dir);
+  try {
+    const settings = listSettings(room.config);
+
+    if (values.json) {
+      sink.out(JSON.stringify(settings, null, 2));
+      return 0;
+    }
+
+    sink.out(bold(`Settings for ${room.config.name}`));
+    for (const row of table(
+      settings.map((s) => [s.key, String(s.value), s.isDefault ? dim("(default)") : dim("(set)")]),
+    )) {
+      sink.out(`  ${row}`);
+    }
+    sink.out("");
+    sink.out(dim('Change one with "atrium config <key> <value> [dir]".'));
     return 0;
   } finally {
     room.close();
@@ -1876,6 +2009,7 @@ Commands:
   context [dir]         the shared brief and its token total; --pin/--unpin to curate it
   search <query> [dir]  full-text search over the room's artifacts
   cost [dir]            per-member and room spend totals against the caps
+  config [dir]          list room settings; "atrium config <key> <value> [dir]" changes one
   history <path> [dir]  every version an artifact has had
   diff <path> [dir]     a unified diff between two versions of an artifact
   gc [dir]              remove stored content no log entry points at
@@ -1937,6 +2071,8 @@ function dispatch(argv: string[], sink: Sink): number {
       return cmdSearch(rest, sink);
     case "cost":
       return cmdCost(rest, sink);
+    case "config":
+      return cmdConfig(rest, sink);
     case "history":
       return cmdHistory(rest, sink);
     case "diff":

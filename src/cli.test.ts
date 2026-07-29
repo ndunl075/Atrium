@@ -13,6 +13,7 @@ import { contentAt, loadBlob, storeBlob } from "./snapshots.js";
 import { sha256 } from "./util.js";
 import {
   cmdBoard,
+  cmdConfig,
   cmdContext,
   cmdDiff,
   cmdGc,
@@ -433,6 +434,218 @@ describe("context", () => {
 
     // The refusal did not pin anything.
     expect(getContext(room).pinned.map((p) => p.path)).toEqual(["small.md"]);
+  });
+});
+
+describe("config", () => {
+  it("lists every setting with its current value, marking the shipped default", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+    const code = cmdConfig([dir], s);
+    const text = s.outLines.join("\n");
+
+    expect(code).toBe(0);
+    expect(text).toMatch(/actionBudget\s+1000\s+\(default\)/);
+    expect(text).toMatch(/allowUncheckedAcceptance\s+false\s+\(default\)/);
+  });
+
+  it("marks a setting that differs from the default as set, not default", () => {
+    const { dir } = tempRoom({ config: { maxAttempts: 1 } });
+    const s = sink();
+    const code = cmdConfig([dir], s);
+    const text = s.outLines.join("\n");
+
+    expect(code).toBe(0);
+    expect(text).toMatch(/maxAttempts\s+1\s+\(set\)/);
+    expect(text).toMatch(/leaseSeconds\s+300\s+\(default\)/);
+  });
+
+  it("--json produces a parseable listing with key, value, default, and isDefault", () => {
+    const { dir } = tempRoom({ config: { maxAttempts: 1 } });
+    const s = sink();
+    const code = cmdConfig(["--json", dir], s);
+    const settings = JSON.parse(s.outLines.join("\n")) as Array<{
+      key: string;
+      value: unknown;
+      default: unknown;
+      isDefault: boolean;
+    }>;
+
+    expect(code).toBe(0);
+    const maxAttempts = settings.find((x) => x.key === "maxAttempts");
+    expect(maxAttempts).toMatchObject({ value: 1, default: 3, isDefault: false });
+    const leaseSeconds = settings.find((x) => x.key === "leaseSeconds");
+    expect(leaseSeconds).toMatchObject({ value: 300, isDefault: true });
+  });
+
+  it("sets one setting and it round-trips through a reopened room", () => {
+    const { dir, room } = tempRoom();
+    const s = sink();
+    const code = cmdConfig(["actionBudget", "5000", dir], s);
+
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/actionBudget is now 5000 \(was 1000\)/);
+
+    room.close();
+    const again = Room.open(dir);
+    try {
+      expect(again.config.actionBudget).toBe(5000);
+    } finally {
+      again.close();
+    }
+  });
+
+  it("rejects a value that cannot be coerced to the setting's type", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+    const code = cmdConfig(["actionBudget", "banana", dir], s);
+
+    expect(code).not.toBe(0);
+    expect(s.errLines.join("\n")).toMatch(/actionBudget must be/);
+  });
+
+  it("rejects a negative actionBudget, saying what is allowed instead", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+    const code = cmdConfig(["actionBudget", "-5", dir], s);
+
+    expect(code).not.toBe(0);
+    expect(s.errLines.join("\n")).toMatch(/1 or more/);
+  });
+
+  it("rejects a maxAttempts of zero", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+    const code = cmdConfig(["maxAttempts", "0", dir], s);
+
+    expect(code).not.toBe(0);
+    expect(s.errLines.join("\n")).toMatch(/1 or more/);
+  });
+
+  it("rejects a leaseSeconds of zero", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+    const code = cmdConfig(["leaseSeconds", "0", dir], s);
+
+    expect(code).not.toBe(0);
+    expect(s.errLines.join("\n")).toMatch(/1 or more/);
+  });
+
+  it("accepts 0 for the settings that document 0 as meaning no cap", () => {
+    const { dir, room } = tempRoom({
+      config: { roomSpendCapUsd: 5, memberSpendCapUsd: 5, retainVersionsPerPath: 3 },
+    });
+
+    for (const key of ["roomSpendCapUsd", "memberSpendCapUsd", "retainVersionsPerPath"]) {
+      const s = sink();
+      const code = cmdConfig([key, "0", dir], s);
+      expect(code).toBe(0);
+    }
+
+    room.close();
+    const again = Room.open(dir);
+    try {
+      expect(again.config.roomSpendCapUsd).toBe(0);
+      expect(again.config.memberSpendCapUsd).toBe(0);
+      expect(again.config.retainVersionsPerPath).toBe(0);
+    } finally {
+      again.close();
+    }
+  });
+
+  it("accepts a fractional roomSpendCapUsd, since dollars are not whole numbers", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+    const code = cmdConfig(["roomSpendCapUsd", "12.5", dir], s);
+
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/roomSpendCapUsd is now 12\.5/);
+  });
+
+  it("warns when turning on allowUncheckedAcceptance, but still applies the change", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+    const code = cmdConfig(["allowUncheckedAcceptance", "true", dir], s);
+    const text = s.outLines.join("\n");
+
+    expect(code).toBe(0);
+    expect(text).toMatch(/allowUncheckedAcceptance is now true/);
+    expect(text).toMatch(/Warning:/);
+    expect(text).toMatch(/self-declared completion/);
+
+    const again = Room.open(dir);
+    try {
+      expect(again.config.allowUncheckedAcceptance).toBe(true);
+    } finally {
+      again.close();
+    }
+  });
+
+  it("does not warn turning allowUncheckedAcceptance off, or on an ordinary setting", () => {
+    const { dir } = tempRoom({ config: { allowUncheckedAcceptance: true } });
+    const s = sink();
+    const code = cmdConfig(["allowUncheckedAcceptance", "false", dir], s);
+
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).not.toMatch(/Warning:/);
+  });
+
+  it("warns that lowering actionBudget to or below the recorded action count halts the room next", () => {
+    const { dir, room } = tempRoom();
+    room.join({ name: "a", role: "worker" });
+    room.join({ name: "b", role: "worker" });
+    const used = room.log.count();
+
+    const s = sink();
+    const code = cmdConfig(["actionBudget", String(used), dir], s);
+    const text = s.outLines.join("\n");
+
+    expect(code).toBe(0);
+    expect(text).toMatch(/Warning:/);
+    expect(text).toMatch(/halt the next time/);
+  });
+
+  it("does not warn when raising actionBudget comfortably above what has been recorded", () => {
+    const { dir, room } = tempRoom();
+    room.join({ name: "a", role: "worker" });
+
+    const s = sink();
+    const code = cmdConfig(["actionBudget", "5000", dir], s);
+
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).not.toMatch(/Warning:/);
+  });
+
+  it("refuses an unknown setting and names the valid ones", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+    const code = cmdConfig(["bogusSetting", "1", dir], s);
+    const msg = s.errLines.join("\n");
+
+    expect(code).not.toBe(0);
+    expect(msg).toMatch(/Unknown setting/);
+    expect(msg).toContain("actionBudget");
+    expect(msg).toContain("allowUncheckedAcceptance");
+  });
+
+  it("rejects extra positional arguments past key, value, and dir", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+    const code = cmdConfig(["actionBudget", "500", dir, "extra"], s);
+    expect(code).not.toBe(0);
+  });
+
+  it("is wired into the top-level dispatcher", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+    expect(runCli(["config", dir], s)).toBe(0);
+  });
+
+  it("--help exits cleanly with usage text", () => {
+    const s = sink();
+    const code = cmdConfig(["--help"], s);
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/Usage: atrium config/);
   });
 });
 
