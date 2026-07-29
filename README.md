@@ -133,6 +133,7 @@ node dist/cli.js cost ./newsroom      # self-reported spend against the caps, if
 node dist/cli.js history draft.md ./newsroom  # every version this file has had
 node dist/cli.js diff draft.md ./newsroom     # what changed between the last two
 node dist/cli.js roster ./newsroom            # who's here, their tags, and their self-reported manifest
+node dist/cli.js watch ./newsroom             # a read-only web view, live in a browser
 ```
 
 Or put a hand on the board yourself, the same way a human member would:
