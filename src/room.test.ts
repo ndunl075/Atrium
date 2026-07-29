@@ -112,6 +112,35 @@ describe("Room.create", () => {
   });
 });
 
+describe("updateConfig", () => {
+  it("changes a setting on the open room immediately", () => {
+    const room = tempRoom();
+    const updated = room.updateConfig({ maxAttempts: 5 });
+    expect(updated.maxAttempts).toBe(5);
+    expect(room.config.maxAttempts).toBe(5);
+  });
+
+  it("persists the change so a reopened room sees it, not just the handle that made it", () => {
+    const room = tempRoom({ config: { maxAttempts: 3 } });
+    room.updateConfig({ maxAttempts: 9 });
+    room.close();
+
+    const again = Room.open(room.dir);
+    try {
+      expect(again.config.maxAttempts).toBe(9);
+    } finally {
+      again.close();
+    }
+  });
+
+  it("leaves every other setting untouched", () => {
+    const room = tempRoom();
+    room.updateConfig({ maxAttempts: 5 });
+    expect(room.config.leaseSeconds).toBe(300);
+    expect(room.config.actionBudget).toBe(1000);
+  });
+});
+
 describe("membership", () => {
   it("adds a member and hands back a token that identifies them", () => {
     const room = tempRoom();
