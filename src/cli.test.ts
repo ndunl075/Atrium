@@ -24,6 +24,7 @@ import {
   cmdLeaseRelease,
   cmdLeases,
   cmdLog,
+  cmdNote,
   cmdPrune,
   cmdOpen,
   cmdReplay,
@@ -692,6 +693,102 @@ describe("search", () => {
 
     expect(code).toBe(0);
     expect(JSON.parse(s.outLines.join("\n"))[0].path).toBe("notes.md");
+  });
+});
+
+describe("note", () => {
+  it("posts a note that lands in the log under the cli's own human identity", () => {
+    const { dir, room } = tempRoom();
+    const s = sink();
+
+    const code = cmdNote(["the client changed the deadline", dir], s);
+
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/Noted/);
+
+    const lines = describeHistory(room).map((h) => h.line);
+    expect(lines.some((l) => l.includes("cli noted: the client changed the deadline"))).toBe(true);
+
+    const cli = room.roster().find((m) => m.name === "cli");
+    expect(cli?.role).toBe("human");
+  });
+
+  it("attaches a note to a real task", () => {
+    const { dir, room } = tempRoom();
+    const worker = room.join({ name: "scout", role: "worker" }).member;
+    const task = createTask(room, worker.id, { title: "draft" });
+
+    const s = sink();
+    const code = cmdNote(["ignore the third source, it is wrong", dir, "--task", task.id], s);
+
+    expect(code).toBe(0);
+    const lines = describeHistory(room).map((h) => h.line);
+    expect(
+      lines.some(
+        (l) => l.includes(`noted on task ${task.id}`) && l.includes("ignore the third source"),
+      ),
+    ).toBe(true);
+  });
+
+  it("refuses a note naming a task that does not exist", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+
+    const code = runCli(["note", "about a task", dir, "--task", "task_doesnotexist"], s);
+
+    expect(code).not.toBe(0);
+    expect(s.errLines.join("\n")).toMatch(/No task task_doesnotexist/);
+  });
+
+  it("refuses an empty note", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+
+    const code = cmdNote(["   ", dir], s);
+
+    expect(code).not.toBe(0);
+    expect(s.errLines.join("\n")).toMatch(/needs text to record/);
+  });
+
+  it("refuses a note over the length cap", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+
+    const code = cmdNote(["x".repeat(4001), dir], s);
+
+    expect(code).not.toBe(0);
+    expect(s.errLines.join("\n")).toMatch(/at most 4000 characters/);
+  });
+
+  it("accepts a note right at the length cap", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+
+    const code = cmdNote(["x".repeat(4000), dir], s);
+
+    expect(code).toBe(0);
+  });
+
+  it("provisions the cli's own human member rather than requiring one already exist", () => {
+    const { dir, room } = tempRoom();
+    cmdNote(["hello room", dir], sink());
+
+    const humans = room.roster().filter((m) => m.role === "human");
+    expect(humans).toHaveLength(1);
+    expect(humans[0]?.name).toBe("cli");
+  });
+
+  it("is wired into the top-level dispatcher", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+    expect(runCli(["note", "dispatched fine", dir], s)).toBe(0);
+  });
+
+  it("--help exits cleanly with usage text", () => {
+    const s = sink();
+    const code = cmdNote(["--help"], s);
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/Usage: atrium note/);
   });
 });
 
