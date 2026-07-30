@@ -62,6 +62,7 @@ The honest state of the project as of 2026-07-30. 27.5k lines of TypeScript, 718
 | `needs_input` task state | `src/board.ts`, `src/tasks.ts` | Ask, answer, withdraw. Claim held and frozen while waiting. §12.6 |
 | Event stream | `src/stream.ts` | `atrium tail`, and SSE at `GET /events`. Payload plus rendered line. §12.4 |
 | `manager` role | `src/types.ts`, `src/board.ts` | A reviewer that can free a stuck claim. Cannot un-freeze an escalation. §12.5 |
+| Named context blocks | `src/context.ts` | `##` sections of the brief, largest first, named in overflow messages. §12.10 |
 
 ### Not built
 
@@ -70,7 +71,6 @@ The honest state of the project as of 2026-07-30. 27.5k lines of TypeScript, 718
 | `atrium plan` — proposed board from the brief | `[PLANNED]` — blocked on a design question | §12.2 |
 | Agent cards for the roster | `[OPEN]` | §12.8 |
 | Long-lived polling workers | `[OPEN]` | §12.9 |
-| Named context blocks | `[OPEN]` | §12.10 |
 | Artifact-first tasks | `[OPEN]` — possible v1 shape | §13.6 |
 | Embeddings / semantic search | Deliberately deferred | §4 |
 | Multi-machine rooms | Deliberately deferred | §9 |
@@ -266,7 +266,7 @@ Every read returns the log sequence number it was valid at. Submitting work carr
 Tasks carry an attempt counter. `[ASSUMPTION]` Three rejections escalates to a human and freezes the task. Rooms also carry a global action budget; on exhaustion the Room halts rather than continuing to spend.
 
 **Context bloat.**
-Tier 1 context has a hard token ceiling. `[OPEN]` What happens on overflow — reject the pin, evict oldest, or summarize? Summarization reintroduces exactly the lossiness this design exists to avoid, so lean toward rejecting the pin and making the human choose. §12.10 would improve the *message* rather than the policy: a ceiling per named block can say which part is full, where one ceiling over everything can only say that something is.
+Tier 1 context has a hard token ceiling. `[OPEN]` What happens on overflow — reject the pin, evict oldest, or summarize? Summarization reintroduces exactly the lossiness this design exists to avoid, so the pin is refused and the human chooses. §12.10 shipped the improvement available here, which was to the *message* and not the policy: a refusal now names the largest blocks of the brief, so somebody told they are 200 tokens over can see where those tokens are. The policy question stays open because it is genuinely open — but note that a per-block ceiling, floated in §12.10 as the fix, is not one: the brief is a plain file, so nothing can refuse an edit that overfills a block, and a limit that cannot say no is not a limit.
 
 **Cost runaway.**
 Per-Room and per-member spend caps exist now (`src/cost.ts`), built honestly around the constraint the rest of this section states: **Atrium does not make the model calls, so it can only total what an adapter self-reports.** A member calls `report_cost` (MCP) or the equivalent library function with a USD amount after each call it makes; Atrium folds those events into running per-member and per-room totals, the same way the board and roster are folded from the log. If a report crosses either cap, the room halts through the existing action-budget mechanism (`Room.assertUsable` / `room.halted`) — the report that crossed the cap still lands, because the money was already spent and the log must not lie about that, but every action after it is refused until a human raises the cap or starts over. `0`, or never setting the fields, means no cap, so a room that ignores this feature behaves exactly as it did before it existed.
@@ -584,13 +584,21 @@ For an agent this matters more than it does for a data pipeline: process startup
 
 `[OPEN]` It also breaks the thing that currently makes the runner obviously *not* an orchestrator: a per-task process cannot hold private state between tasks, so it cannot become a second source of truth by accident. A long-lived worker can. If this is built, the rule in §7.4 needs teeth beyond good intentions.
 
-### 12.10 Named context blocks `[OPEN]`
+### 12.10 Named context blocks `[SHIPPED]`
 
-From Letta's memory blocks (§13.3). Tier 1 context is one `CONTEXT.md` plus pinned artifacts. Letta's version is labelled blocks — persona, goals, constraints — that are individually editable and always in context.
+From Letta's memory blocks (§13.3). Letta keeps labelled, individually editable blocks — persona, goals, constraints — always in context.
 
-The specific thing this would fix is the `[OPEN]` in §6 about context overflow. "The brief is too long, reject the pin" is a bad message. "The `constraints` block is full" is an actionable one, and it lets a room set a ceiling per block instead of one ceiling for everything.
+What was worth taking turned out to be the *addressability*, not the storage model. Once the brief has named parts, "the brief is too long" becomes "constraints is 300 of your 400 tokens", which is a sentence somebody can act on.
 
-`[ASSUMPTION]` Blocks would be sections of `CONTEXT.md`, addressed by heading, not a new store. A room's brief must stay a file a person can open and read in a text editor; that property is worth more than tidy addressing.
+Blocks are `##` sections of `CONTEXT.md`, read out of the file that already exists. `getContext` returns them largest first, `atrium context` prints the breakdown, and a refused pin now names the biggest parts of the brief.
+
+`[CONFIRMED]` Not a new store. §4 is built on the brief being a plain file anybody can open in an editor, and that is worth more than tidy addressing — so this is a reading of the file, and a brief with no headings simply has one unnamed block.
+
+`[CONFIRMED]` A single `#` is not a block boundary. Every brief this project writes opens with one — `Room.create` and every job file — so splitting on it would give every room exactly one block, named after itself, which names nothing.
+
+**What this deliberately did *not* do, contrary to the original plan.** The section proposed "a ceiling per block instead of one ceiling for everything". That is unenforceable and would have been a lie: the brief is a plain file, so nothing can refuse an edit that overfills a block. A per-block ceiling could only ever be reported after the fact, and a limit that cannot say no is not a limit. The single ceiling stays, enforced where it can be — at the pin.
+
+So the `[OPEN]` in §6 is *narrowed rather than closed*: the policy is unchanged, and it was never the policy that was wrong. What changed is that the refusal now names the largest blocks, so somebody told "you are 200 tokens over" can see where those tokens are. Unpinning is no help when the brief itself is what is full, and the old message only ever offered that remedy.
 
 ---
 

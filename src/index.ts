@@ -167,6 +167,9 @@ export {
   type VerifyReport,
 } from "./verify.js";
 export {
+  parseContextBlocks,
+  contextBlocks,
+  type ContextBlock,
   recordBrief,
   briefAt,
   briefHistory,

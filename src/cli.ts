@@ -1150,6 +1150,15 @@ export function cmdContext(argv: string[], sink: Sink): number {
     const pct = context.ceiling > 0 ? Math.round((context.tokens / context.ceiling) * 100) : 0;
     const over = context.tokens > context.ceiling ? red(" — over the ceiling") : "";
     sink.out(`Tokens: ${context.tokens} / ${context.ceiling} (${pct}%)${over}`);
+
+    // Largest first, because the only time anybody reads this is when the
+    // brief is too big and the question is what is taking up the room.
+    const named = context.blocks.filter((block) => block.heading !== undefined);
+    if (named.length > 0) {
+      for (const block of context.blocks) {
+        sink.out(dim(`  ${block.name.padEnd(20)} ~${block.tokens}`));
+      }
+    }
     sink.out("");
 
     sink.out(bold(`Pinned (${context.pinned.length})`));

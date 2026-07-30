@@ -5,6 +5,8 @@ import { join } from "node:path";
 
 import {
   briefAt,
+  contextBlocks,
+  parseContextBlocks,
   briefDrift,
   briefHistory,
   describeHistory,
@@ -222,6 +224,101 @@ describe("pinning", () => {
  * plain file anybody can edit without going through Atrium, so recording it
  * is a capture rather than a write path.
  */
+/**
+ * ARCHITECTURE.md §12.10. Blocks exist so that "the brief is too long"
+ * becomes a sentence somebody can act on. They deliberately do not change the
+ * overflow policy — §6 still refuses the pin and makes a person choose.
+ */
+describe("named context blocks", () => {
+  it("splits a brief into its ## sections", () => {
+    const blocks = parseContextBlocks(
+      ["# Newsroom", "The job.", "", "## House style", "No subheadings.", "", "## Sources", "Four minimum."].join("\n"),
+    );
+
+    expect(blocks.map((b) => b.name)).toEqual(["preamble", "house-style", "sources"]);
+    expect(blocks[1]!.heading).toBe("House style");
+    expect(blocks[1]!.text).toBe("No subheadings.");
+  });
+
+  it("treats a single # as the document title, not a block boundary", () => {
+    // Every brief this project writes opens with one, so splitting on it
+    // would give every room a single block named after itself.
+    const blocks = parseContextBlocks("# Newsroom\n\nThe whole brief.\n");
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]!.name).toBe("preamble");
+    expect(blocks[0]!.heading).toBeUndefined();
+  });
+
+  it("gives a brief with no headings one unnamed block", () => {
+    const blocks = parseContextBlocks("Just some prose.\n");
+    expect(blocks.map((b) => b.name)).toEqual(["preamble"]);
+  });
+
+  it("has no blocks for an empty brief", () => {
+    expect(parseContextBlocks("")).toEqual([]);
+  });
+
+  it("keeps a heading with nothing under it", () => {
+    // A section somebody made and has not filled in is part of the brief's
+    // structure; hiding it would make this disagree with the file.
+    const blocks = parseContextBlocks("## Constraints\n\n## Sources\nOne.\n");
+    expect(blocks.map((b) => b.name)).toEqual(["constraints", "sources"]);
+    expect(blocks[0]!.text).toBe("");
+  });
+
+  it("slugs headings with punctuation and spacing", () => {
+    const blocks = parseContextBlocks("## House Style & Tone!\ntext\n");
+    expect(blocks[0]!.name).toBe("house-style-tone");
+  });
+
+  it("reports blocks largest first, which is the order for trimming", () => {
+    const room = tempRoom();
+    writeFileSync(
+      room.paths.context,
+      ["## Small", "one", "", "## Large", "x".repeat(400)].join("\n"),
+      "utf8",
+    );
+
+    expect(contextBlocks(room).map((b) => b.name)).toEqual(["large", "small"]);
+    expect(getContext(room).blocks[0]!.name).toBe("large");
+  });
+
+  it("names the biggest parts of the brief when a pin is refused", () => {
+    const room = tempRoom({ config: { contextTokenCeiling: 40 } });
+    const worker = room.join({ name: "scout", role: "worker" }).member;
+    writeFileSync(
+      room.paths.context,
+      ["## Constraints", "x".repeat(300), "", "## Sources", "short"].join("\n"),
+      "utf8",
+    );
+    write(room, "big.md", "y".repeat(200));
+
+    let thrown: unknown;
+    try {
+      pinArtifact(room, worker.id, "big.md");
+    } catch (err) {
+      thrown = err;
+    }
+
+    // Unpinning is no help when the brief itself is what is full, so a
+    // message that only offered that remedy would be offering the one that
+    // cannot work.
+    expect((thrown as Error).message).toMatch(/largest parts of the brief are constraints/);
+  });
+
+  it("says so plainly when the brief has no headings to point at", () => {
+    const room = tempRoom({ config: { contextTokenCeiling: 20 } });
+    const worker = room.join({ name: "scout", role: "worker" }).member;
+    writeFileSync(room.paths.context, "z".repeat(300), "utf8");
+    write(room, "big.md", "y".repeat(200));
+
+    expect(() => pinArtifact(room, worker.id, "big.md")).toThrow(
+      /no "## " headings, so there is no smaller part of it to point at/,
+    );
+  });
+});
+
 describe("recording the brief", () => {
   function setBrief(room: Room, text: string): void {
     writeFileSync(room.paths.context, text, "utf8");

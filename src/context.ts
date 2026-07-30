@@ -25,6 +25,11 @@ export interface PinnedArtifact {
 export interface RoomContext {
   /** The room's CONTEXT.md, verbatim. Empty string if the file is missing. */
   brief: string;
+  /**
+   * The brief split into its `##` sections, largest first (§12.10). A brief
+   * with no headings has one block; a missing brief has none.
+   */
+  blocks: ContextBlock[];
   pinned: PinnedArtifact[];
   /** estimateTokens(brief) plus every pinned file, whether or not it fits. */
   tokens: number;
@@ -112,6 +117,8 @@ export function getContext(room: Room): RoomContext {
     ? readFileSync(room.paths.context, "utf8")
     : "";
 
+  const blocks = parseContextBlocks(brief).sort((a, b) => b.tokens - a.tokens);
+
   const pinned: PinnedArtifact[] = [];
   for (const path of listPinned(room)) {
     const abs = resolveArtifact(room.dir, path);
@@ -126,7 +133,7 @@ export function getContext(room: Room): RoomContext {
     estimateTokens(brief) +
     pinned.reduce((sum, p) => sum + estimateTokens(p.content), 0);
 
-  return { brief, pinned, tokens, ceiling: room.config.contextTokenCeiling };
+  return { brief, blocks, pinned, tokens, ceiling: room.config.contextTokenCeiling };
 }
 
 /**
@@ -180,7 +187,11 @@ export function pinArtifact(room: Room, actorId: MemberId, path: string): void {
     throw new InvalidError(
       `Pinning ${relPath} would bring the room context to ~${prospective} tokens, ` +
         `${overBy} over the ceiling of ${ceiling}. The brief and current pins are already ` +
-        `~${current} tokens; ${relPath} alone is ~${fileTokens}. ${options}`,
+        `~${current} tokens; ${relPath} alone is ~${fileTokens}.` +
+        // Naming the biggest parts of the brief matters when the brief is
+        // what is actually full: unpinning is no help then, and without this
+        // the message would only ever offer the remedy that cannot work.
+        `${describeLargestBlocks(room)} ${options}`,
       {
         path: relPath,
         currentTokens: current,
@@ -216,6 +227,117 @@ export function listPinned(room: Room): string[] {
     else if (event.type === "context.unpinned") pinned.delete(event.data.path);
   }
   return [...pinned.keys()];
+}
+
+// ---------------------------------------------------------------------------
+// Named blocks
+//
+// ARCHITECTURE.md §12.10, from Letta's memory blocks (§13.3). Letta keeps
+// labelled, individually editable blocks — persona, goals, constraints —
+// always in context. The thing worth taking is not the storage model but the
+// *addressability*: once the brief has named parts, "the brief is too long"
+// becomes "the constraints block is 400 of your 500 tokens", which is a
+// sentence somebody can act on.
+//
+// Blocks are `##` headings inside CONTEXT.md, not a new store. §4 is built on
+// the brief being a plain file anybody can open in an editor, and that is
+// worth more than tidy addressing — so this is a *reading* of the file that
+// already exists, and a room whose brief has no headings simply has one
+// unnamed block.
+//
+// What this deliberately does not do is change the overflow policy. §6 leans
+// toward refusing a pin and making a person choose, and that is still what
+// happens; blocks only make the refusal legible.
+// ---------------------------------------------------------------------------
+
+export interface ContextBlock {
+  /** Slug from the heading: "House style" becomes "house-style". */
+  name: string;
+  /** The heading as written, or undefined for text above the first one. */
+  heading?: string;
+  /** The block's body, without its heading line. */
+  text: string;
+  tokens: number;
+}
+
+/** Text before any `##` heading, which is most rooms' whole brief. */
+const PREAMBLE_BLOCK = "preamble";
+
+/**
+ * Splits a brief into its named blocks.
+ *
+ * Only `##` and deeper count as block boundaries. A single `#` is the
+ * document title in every brief this project writes — `Room.create` and every
+ * job file open with one — so treating it as a block would give every room a
+ * single block called after itself, which names nothing.
+ */
+export function parseContextBlocks(brief: string): ContextBlock[] {
+  const blocks: ContextBlock[] = [];
+  let current: { heading?: string; lines: string[] } = { lines: [] };
+
+  const flush = (): void => {
+    const text = current.lines.join("\n").trim();
+    // A heading with nothing under it is still a block: it is a section
+    // somebody made and has not filled in, and hiding it would make the
+    // brief's own structure disagree with what this reports.
+    if (text === "" && current.heading === undefined) return;
+    blocks.push({
+      name: current.heading === undefined ? PREAMBLE_BLOCK : slug(current.heading),
+      ...(current.heading !== undefined ? { heading: current.heading } : {}),
+      text,
+      tokens: estimateTokens(text),
+    });
+  };
+
+  for (const line of brief.split("\n")) {
+    const heading = /^#{2,6}\s+(.*\S)\s*$/.exec(line);
+    if (heading === null) {
+      current.lines.push(line);
+      continue;
+    }
+    flush();
+    current = { heading: heading[1], lines: [] };
+  }
+  flush();
+
+  return blocks;
+}
+
+function slug(heading: string): string {
+  return (
+    heading
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "section"
+  );
+}
+
+/**
+ * The brief's blocks, largest first — the order somebody trimming it wants.
+ *
+ * Sorted rather than in document order because the only time anybody asks for
+ * this is when the brief is too big, and then the question is always "what is
+ * taking up the room".
+ */
+export function contextBlocks(room: Room): ContextBlock[] {
+  const brief = existsSync(room.paths.context)
+    ? readFileSync(room.paths.context, "utf8")
+    : "";
+  return parseContextBlocks(brief).sort((a, b) => b.tokens - a.tokens);
+}
+
+/** The biggest blocks, named and sized, for a message about being over budget. */
+function describeLargestBlocks(room: Room, howMany = 3): string {
+  const blocks = contextBlocks(room).filter((block) => block.tokens > 0);
+  if (blocks.length === 0) return "";
+
+  const named = blocks
+    .slice(0, howMany)
+    .map((block) => `${block.name} (~${block.tokens})`)
+    .join(", ");
+  return blocks.length === 1 && blocks[0]!.name === PREAMBLE_BLOCK
+    ? ` The brief itself is ~${blocks[0]!.tokens} tokens and has no "## " headings, so there is no smaller part of it to point at.`
+    : ` The largest parts of the brief are ${named}.`;
 }
 
 // ---------------------------------------------------------------------------
