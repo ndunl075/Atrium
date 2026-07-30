@@ -2863,7 +2863,13 @@ export async function cmdWatch(argv: string[], sink: Sink): Promise<number> {
   }
 }
 
-function main(): void {
+/**
+ * Exported so the single-executable build has something to call. A packaged
+ * binary cannot use `isEntryPoint` below — there is no module URL to compare
+ * against argv — so it imports this directly instead of relying on the
+ * side effect at the bottom of this file.
+ */
+export function main(): void {
   const sink: Sink = {
     out: (line) => process.stdout.write(line + "\n"),
     err: (line) => process.stderr.write(line + "\n"),
@@ -2895,7 +2901,17 @@ function main(): void {
 // Importing this module (from a test, say) must never launch a command —
 // only running it directly as `node cli.js ...` should.
 function isEntryPoint(): boolean {
-  return process.argv[1] !== undefined && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+  // No module URL means this is the bundled single-executable build, where
+  // `import.meta` is compiled away to an empty object. There is nothing to
+  // compare against argv there, and nothing to decide: sea.ts is the entry and
+  // calls main() itself. Answering "no" is both true and what keeps this from
+  // running twice. Reading it defensively rather than assuming a string is the
+  // point — assuming threw, and it threw before the binary could print
+  // anything at all.
+  const moduleUrl: string | undefined = import.meta?.url;
+  if (typeof moduleUrl !== "string") return false;
+
+  return process.argv[1] !== undefined && fileURLToPath(moduleUrl) === resolve(process.argv[1]);
 }
 
 if (isEntryPoint()) {

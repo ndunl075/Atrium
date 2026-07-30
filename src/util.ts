@@ -56,7 +56,20 @@ export function estimateTokens(text: string): number {
  */
 export const PACKAGE_VERSION: string = readPackageVersion();
 
+/**
+ * Replaced by the bundler with a string literal when building the single
+ * executable. Declared, never defined: in an ordinary run the identifier does
+ * not exist at all, which is why it is reached through `typeof` below.
+ */
+declare const __ATRIUM_VERSION__: string | undefined;
+
 function readPackageVersion(): string {
+  // A packaged binary has no package.json beside it to read, so the version is
+  // baked in at build time. Checked first because otherwise every released
+  // binary would fall through to the catch below and report 0.0.0 — the exact
+  // drift this function was written to end, reintroduced by the packaging.
+  if (typeof __ATRIUM_VERSION__ === "string") return __ATRIUM_VERSION__;
+
   try {
     const here = dirname(fileURLToPath(import.meta.url));
     const pkg = JSON.parse(readFileSync(join(here, "..", "package.json"), "utf8")) as {

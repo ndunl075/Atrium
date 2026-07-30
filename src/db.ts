@@ -41,9 +41,23 @@ interface NodeSqlite {
 
 silenceSqliteExperimentalWarning();
 
-const { DatabaseSync } = createRequire(import.meta.url)(
-  "node:sqlite",
-) as NodeSqlite;
+/**
+ * `node:sqlite` is reached through `require` rather than a static import
+ * because it is still flagged experimental and a static import makes Node
+ * print a warning before this file can silence it.
+ *
+ * Which `require` depends on how this code was loaded. Run normally it is an
+ * ES module, so there is no `require` and one is built from `import.meta.url`.
+ * Bundled into a single executable it is CommonJS, where `require` exists and
+ * `import.meta` does not — and the bundler quietly compiles `import.meta.url`
+ * to an empty object rather than failing, so getting this wrong would not
+ * break the build. It would produce a binary that dies the first time anybody
+ * opened a room, which is a worse way to find out.
+ */
+const requireSqlite: NodeRequire =
+  typeof require === "function" ? require : createRequire(import.meta.url);
+
+const { DatabaseSync } = requireSqlite("node:sqlite") as NodeSqlite;
 
 export interface Statement {
   run(...params: SqlValue[]): { changes: number; lastInsertRowid: number };

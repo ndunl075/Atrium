@@ -1,0 +1,100 @@
+name: Release
+
+# Tag-driven, so cutting a release is `git tag v0.3.0 && git push --tags` and
+# nothing else. Also runnable by hand, because the first time anybody uses this
+# they will want to watch it build without creating a tag they then have to
+# delete.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # A single-executable build works by appending the program to a copy
+          # of the Node binary, so it can only ever produce a binary for the
+          # platform it ran on. Three machines is not thoroughness here, it is
+          # the only way to get three binaries.
+          - os: windows-latest
+            target: atrium-windows-x64.exe
+            built: build/atrium.exe
+          - os: macos-latest
+            target: atrium-macos-arm64
+            built: build/atrium
+          - os: ubuntu-latest
+            target: atrium-linux-x64
+            built: build/atrium
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # A release that ships a binary nobody tested is worse than no release.
+      # The same checks CI runs on every pull request run again here, because a
+      # tag can be pushed at a commit that never had them.
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Test
+        run: npm test
+
+      - name: Build the executable
+        run: npm run build:binary
+
+      - name: Name it for the platform
+        shell: bash
+        run: mv "${{ matrix.built }}" "${{ matrix.target }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ matrix.target }}
+          if-no-files-found: error
+
+  publish:
+    name: Attach to the release
+    needs: build
+    runs-on: ubuntu-latest
+    # Only a tag produces a release. A manual run builds all three and leaves
+    # them as workflow artifacts, which is what makes this safe to try out.
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Show what is about to be published
+        run: ls -lh assets
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: assets/*
+          generate_release_notes: true
+          body: |
+            Download the binary for your platform below. It needs nothing
+            installed — Node is inside it, which is why each one is around
+            80 MB.
+
+            **macOS**: the binary is unsigned, so Gatekeeper will refuse it on
+            first run. Right-click it and choose Open, or
+            `xattr -d com.apple.quarantine ./atrium-macos-arm64`. Signing it
+            properly needs a paid Apple Developer account.
+
+            **Linux and macOS**: `chmod +x` it first.
