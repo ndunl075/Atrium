@@ -28,7 +28,6 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
-  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -39,6 +38,7 @@ import { InvalidError } from "./errors.js";
 import { resolveArtifact, toArtifactPath } from "./paths.js";
 import type { Room } from "./room.js";
 import type { MemberId } from "./types.js";
+import { renameWithRetry } from "./util.js";
 
 const OBJECTS_DIR = "objects";
 
@@ -61,7 +61,7 @@ export function storeBlob(room: Room, hash: string, bytes: Uint8Array): void {
   mkdirSync(join(room.paths.atrium, OBJECTS_DIR, hash.slice(0, 2)), { recursive: true });
   const tmp = `${dest}.tmp-${process.pid}-${Date.now()}`;
   writeFileSync(tmp, bytes);
-  renameSync(tmp, dest);
+  renameWithRetry(tmp, dest);
 }
 
 /** Loads a blob by hash, or `undefined` if this room never stored one under

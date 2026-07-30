@@ -10,7 +10,6 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
-  renameSync,
   writeFileSync,
 } from "node:fs";
 
@@ -30,7 +29,7 @@ import {
   type MemberRole,
   type RoomConfig,
 } from "./types.js";
-import { newId, newToken, now, sha256 } from "./util.js";
+import { newId, newToken, now, renameWithRetry, sha256 } from "./util.js";
 
 export interface CreateRoomOptions {
   /** Shown in the CLI and the log. Defaults to the directory name. */
@@ -327,5 +326,5 @@ function basename(p: string): string {
 function writeJson(path: string, value: unknown, mode?: number): void {
   const tmp = `${path}.tmp`;
   writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n", { encoding: "utf8", mode });
-  renameSync(tmp, path);
+  renameWithRetry(tmp, path);
 }

@@ -32,7 +32,6 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
-  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -44,7 +43,7 @@ import { Room } from "./room.js";
 import { LeaseError, StaleError } from "./errors.js";
 import { storeBlob } from "./snapshots.js";
 import type { AnyEvent, ArtifactInfo, EventType, MemberId } from "./types.js";
-import { sha256 } from "./util.js";
+import { renameWithRetry, sha256 } from "./util.js";
 
 const ARTIFACT_EVENT_TYPES: EventType[] = ["artifact.written", "artifact.deleted"];
 
@@ -272,7 +271,7 @@ export function writeArtifact(
   mkdirSync(dirname(abs), { recursive: true });
   const tmp = `${abs}.tmp-${process.pid}-${Date.now()}`;
   writeFileSync(tmp, bytes);
-  renameSync(tmp, abs);
+  renameWithRetry(tmp, abs);
 
   const hash = sha256(bytes);
   // Content-addressed: the blob for this hash may already be on disk, from
