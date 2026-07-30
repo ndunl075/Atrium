@@ -27,7 +27,7 @@ This document was originally written before any code existed. Sections that have
 
 ## 0. Implementation status
 
-The honest state of the project as of 2026-07-30. 21.5k lines of TypeScript, 522 tests across 20 files, zero runtime dependencies.
+The honest state of the project as of 2026-07-30. 26.5k lines of TypeScript, 692 tests across 25 files, zero runtime dependencies.
 
 ### Built and tested
 
@@ -47,9 +47,9 @@ The honest state of the project as of 2026-07-30. 21.5k lines of TypeScript, 522
 | Full-text artifact search | `src/search.ts` | No embeddings, by design (§4 Tier 2). |
 | Room context, pinning, token ceiling | `src/context.ts` | |
 | Self-reported cost accounting, advisory caps | `src/cost.ts` | Advisory only — see §6 for why that ceiling is real. |
-| MCP server over stdio | `src/mcp.ts` | 23 tools. |
+| MCP server over stdio | `src/mcp.ts` | 26 tools. |
 | MCP server over HTTP | `src/http.ts` | `127.0.0.1` only, bearer token required, no anonymous join. |
-| CLI | `src/cli.ts` | 24 commands including `task` administration as an auto-provisioned `human` member. |
+| CLI | `src/cli.ts` | Including `task` administration as an auto-provisioned `human` member. |
 | Read-only Watch UI | `src/watch.ts` | Board, live event stream, artifact diffs, live agent activity. |
 | Thin runner | `src/runner.ts` | Operator-declared worker commands, bounded dispatch pass, `--dry-run`. |
 | Single-file binary build | `scripts/build-binary.mjs`, `src/sea.ts` | |
@@ -58,16 +58,16 @@ The honest state of the project as of 2026-07-30. 21.5k lines of TypeScript, 522
 | Runnable demo with reference workers | `examples/demo/`, `src/demo.test.ts` | `npm run demo`. Scripted MCP clients; doubles as a regression test. §12.1a |
 | Fork a room from a point in its log | `src/fork.ts` | `atrium fork`. Exact reconstruction, inherited history, provenance in the log. §12.7 |
 | The brief recorded in the log | `src/context.ts` | `context.written`, captured on join. `atrium context --record/--history/--at`. §4.1 |
+| `expectedOutput` contracts on tasks | `src/types.ts`, `src/board.ts` | A contract for whoever accepts, never a gate. §12.3 |
+| `needs_input` task state | `src/board.ts`, `src/tasks.ts` | Ask, answer, withdraw. Claim held and frozen while waiting. §12.6 |
 
 ### Not built
 
 | Capability | Status | Section |
 |---|---|---|
-| `atrium plan` — proposed board from the brief | `[PLANNED]` — next | §12.2 |
-| `expectedOutput` contract on tasks | `[PLANNED]` | §12.3 |
-| Event stream for external observability | `[PLANNED]` | §12.4 |
+| Event stream for external observability | `[PLANNED]` — next | §12.4 |
 | `manager` role | `[PLANNED]` | §12.5 |
-| `needs_input` task state | `[PLANNED]` | §12.6 |
+| `atrium plan` — proposed board from the brief | `[PLANNED]` — blocked on a design question | §12.2 |
 | Agent cards for the roster | `[OPEN]` | §12.8 |
 | Long-lived polling workers | `[OPEN]` | §12.9 |
 | Named context blocks | `[OPEN]` | §12.10 |
@@ -499,17 +499,23 @@ Add `manager` to the roles in §3.2: may create tasks, and is the default review
 
 `[ASSUMPTION]` A manager is a member like any other, not a scheduler and not a control loop. It has no privileged view of the board and cannot accept its own submissions — the rule in §5 has no exceptions and this role does not become the first one. If rooms turn out to thrash without a real scheduler (§11), that is a separate decision to make deliberately, not something to let this role quietly become.
 
-### 12.6 `needs_input` task state `[PLANNED]`
+### 12.6 `needs_input` task state `[SHIPPED]`
 
-From A2A's task lifecycle (§13.2). Atrium's states are `open → claimed → submitted → accepted | rejected`, plus `blocked`. There is no state for *the worker started and cannot continue without something*.
+From A2A's task lifecycle (§13.2). The states were `open → claimed → submitted → accepted | rejected`, plus `blocked`, and there was no state for *the worker started and cannot continue without something*.
 
-Today an agent in that position has three bad options: release the claim and lose its place, sit on the claim until the lease lapses, or guess. Guessing is the one that produces the plausible-but-wrong output §5 exists to catch, and it is the one an LLM will pick.
+An agent in that position had three bad options: release the claim and lose its place, sit on the claim until the lease lapsed, or guess. Guessing produces the plausible-but-wrong output §5 exists to catch, and it is the one an LLM picks — so the absence of this state was quietly pushing work toward the failure the whole project is about.
 
-Add `needs_input`: the claim is held, a question is recorded against the task, and any other member — human or agent — can answer it. Answering returns the task to `claimed` with the answer in the log.
+`needs_input` holds the claim, records the question against the task, and lets any other member answer. Three MCP tools (`ask_for_input`, `provide_input`, `withdraw_question`), `atrium task answer` for a human, and the state sorts first on the board because it is the only one waiting on a person.
 
-`[CONFIRMED]` The question and the answer are events on the log, not a message between two members. That is what keeps this inside the §2 thesis rather than reintroducing handoffs: a third agent reading the room later sees the question, the answer, and what was done with it, in order.
+`[CONFIRMED]` The question and the answer are events, not a message between two members. That is what keeps this inside the §2 thesis rather than reintroducing the handoff it argues against: a third agent reading the room later sees the question, the answer, and what was done with them, in order, without anybody having summarised anything.
 
-`[OPEN]` Whether a claim's lease should keep ticking while a task waits on a human. It should probably pause, or every overnight question loses its claim by morning — but a lease that pauses is a lease that can be held forever by a worker that crashed right after asking.
+`[CONFIRMED]` The asker cannot answer itself — not because self-answering is dangerous the way self-acceptance is, but because `needs_input` means "I could not work this out", and a member that has worked it out after all wants `withdraw_question`, which says so plainly instead of leaving a log where somebody appears to have told themselves something.
+
+**The claim question, now decided.** This section used to carry an `[OPEN]`: a lease that keeps ticking loses the asker its place for asking at five o'clock, but a lease that pauses can be held forever by a worker that crashed right after asking. Both horns are real and the resolution turns out to cost nothing:
+
+**A claim stops expiring while its task waits, and answering hands out a *fresh* window rather than restoring the old one.** Waiting is therefore free — a question can sit overnight. And a worker that died right after asking gets handed a new window it will never renew, so the claim lapses a moment after the task is unblocked and the task returns to the board on its own. Nothing is held forever, and no sweeper has to run to notice. The objection dissolves rather than being traded off.
+
+`[OPEN]` Nothing yet escalates a question nobody answers. A task can wait indefinitely, visible on the board and ignored. The rejection path freezes after `maxAttempts` and waits for a human; this path has no equivalent, and probably wants one — a question unanswered for long enough is as stuck as a task rejected three times.
 
 ### 12.7 Fork a room from a point in its log `[SHIPPED]`
 

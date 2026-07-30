@@ -58,6 +58,7 @@ import {
   releaseTask,
   renewClaim,
   resolveArtifact,
+  supplyInput,
   restartTask,
   reviewTask,
   runRoomOnce,
@@ -84,6 +85,7 @@ import type {
   Member,
   MemberId,
   MemberRole,
+  TaskId,
   RunnerConfig,
   RunnerWorker,
   Task,
@@ -137,7 +139,10 @@ function table(rows: string[][]): string[] {
   );
 }
 
+// needs_input comes first because it is the only state on the board waiting
+// on a person. Everything else is either moving or somebody else's turn.
 const STATE_ORDER: TaskState[] = [
+  "needs_input",
   "open",
   "blocked",
   "claimed",
@@ -156,6 +161,7 @@ function taskRow(task: Task): string[] {
     extras.push(`${task.attempts} attempt${task.attempts === 1 ? "" : "s"}`);
   }
   if (task.escalated) extras.push("escalated");
+  if (task.pendingQuestion) extras.push(`asked: ${task.pendingQuestion.text}`);
   return [task.id, task.title, extras.join("; ")];
 }
 
@@ -2689,6 +2695,60 @@ export function cmdTaskRenew(argv: string[], sink: Sink): number {
   }
 }
 
+const TASK_ANSWER_HELP = `Usage: atrium task answer <id> <room> --text "the answer"
+
+Answers a question a worker is stuck on, putting its task back to work.
+
+A worker that cannot go on — an ambiguity in the brief, a decision only a
+person can make — says so with the MCP "ask_for_input" tool rather than
+guessing. Its task moves to needs_input, keeps its claim, and stops
+expiring, so it can wait as long as it takes to get an answer.
+
+The answer goes on the log, not to the worker, so whoever picks the task
+up can read it — which need not be the member that asked, if that one has
+since died.
+
+You cannot answer a question you asked yourself. If the worker resolved it
+alone it withdraws the question instead, which says so plainly.
+
+Options:
+  --text <answer>  the answer (required)
+  --help, -h       show this help
+`;
+
+export function cmdTaskAnswer(argv: string[], sink: Sink): number {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: { help: { type: "boolean", short: "h" }, text: { type: "string" } },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(TASK_ANSWER_HELP);
+    return 0;
+  }
+
+  const taskId = positionals[0];
+  if (taskId === undefined) {
+    sink.err('task answer needs a task id, e.g. "atrium task answer task_abc123 ./room --text ...".');
+    return 2;
+  }
+  if (values.text === undefined || values.text.trim() === "") {
+    sink.err('task answer needs --text "the answer".');
+    return 2;
+  }
+
+  const room = openRoom(positionals[1] ?? process.cwd());
+  try {
+    const actorId = ensureCliHuman(room);
+    const task = supplyInput(room, actorId, taskId as TaskId, values.text);
+    sink.out(`Answered ${taskId}; it is claimed again by ${task.claimedBy}.`);
+    sink.out(dim(`Its claim now expires ${task.claimExpiresAt}.`));
+    return 0;
+  } finally {
+    room.close();
+  }
+}
+
 const TASK_UNBLOCK_HELP = `Usage: atrium task unblock <id> <room>
 
 Restarts a task that froze after too many rejections. ARCHITECTURE.md §6:
@@ -2819,6 +2879,8 @@ export function cmdTask(argv: string[], sink: Sink): number {
       return cmdTaskRelease(rest, sink);
     case "renew":
       return cmdTaskRenew(rest, sink);
+    case "answer":
+      return cmdTaskAnswer(rest, sink);
     case "unblock":
       return cmdTaskUnblock(rest, sink);
     case "sweep":

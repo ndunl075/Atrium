@@ -26,7 +26,16 @@ import {
   listLeases,
   releaseLease,
 } from "./leases.js";
-import { claimTask, createTask, getTask, listTasks, renewClaim } from "./board.js";
+import {
+  askForInput,
+  claimTask,
+  createTask,
+  getTask,
+  listTasks,
+  renewClaim,
+  supplyInput,
+  withdrawQuestion,
+} from "./board.js";
 import { describeHistory, getContext, listPinned, pinArtifact, unpinArtifact } from "./context.js";
 import { costSummary, reportCost } from "./cost.js";
 import { InvalidError, isAtriumError } from "./errors.js";
@@ -222,6 +231,29 @@ export class RoomServer {
 
       case "renew_claim":
         return renewClaim(
+          this.room,
+          this.requireMember().id,
+          str(args, "task_id") as TaskId,
+        );
+
+      case "ask_for_input":
+        return askForInput(
+          this.room,
+          this.requireMember().id,
+          str(args, "task_id") as TaskId,
+          str(args, "question"),
+        );
+
+      case "provide_input":
+        return supplyInput(
+          this.room,
+          this.requireMember().id,
+          str(args, "task_id") as TaskId,
+          str(args, "answer"),
+        );
+
+      case "withdraw_question":
+        return withdrawQuestion(
           this.room,
           this.requireMember().id,
           str(args, "task_id") as TaskId,
@@ -722,7 +754,7 @@ const TOOLS: ToolDefinition[] = [
       properties: {
         state: {
           type: "string",
-          enum: ["open", "claimed", "submitted", "accepted", "rejected", "blocked"],
+          enum: ["open", "claimed", "needs_input", "submitted", "accepted", "rejected", "blocked"],
         },
         claimable: { type: "boolean" },
       },
@@ -792,6 +824,46 @@ const TOOLS: ToolDefinition[] = [
     name: "renew_claim",
     description:
       "Extend your claim on a task before it lapses. Claims expire after a fixed number of seconds so a crashed worker cannot wedge a task forever — call get_task and check claimExpiresAt to find out how much time you actually have left, and call this well before that if the work is going to take longer, which most real work does. Refuses if you never held this claim, if somebody else holds it now, or — the case to watch for — if yours already lapsed: once that happens the task is back on the board and somebody else may have claimed it, so this will not resurrect the old claim. Call claim_task again instead; it will succeed if the task is still open.",
+    inputSchema: {
+      type: "object",
+      properties: { task_id: { type: "string" } },
+      required: ["task_id"],
+    },
+  },
+  {
+    name: "ask_for_input",
+    description:
+      "Say that you cannot finish the task you are holding without something — a decision, a missing credential, an ambiguity in the brief only a person can settle. Use this instead of guessing: a guess that looks plausible is the exact failure this room's acceptance rules exist to catch, and it wastes a review cycle at best. You keep your claim, and it stops expiring, so asking costs you nothing even if the answer takes until tomorrow. The question goes on the log where anybody can see it, not to a particular member, so whoever is best placed to answer can.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task_id: { type: "string" },
+        question: {
+          type: "string",
+          description:
+            "What you need, specifically enough that somebody could answer it without reading your mind. Say what you would do with each answer if there is a choice.",
+        },
+      },
+      required: ["task_id", "question"],
+    },
+  },
+  {
+    name: "provide_input",
+    description:
+      "Answer a question somebody else's task is waiting on, which puts it back to work. You cannot answer your own question — if you worked it out yourself, call withdraw_question instead. Check list_tasks with state \"needs_input\" to find what is waiting.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task_id: { type: "string" },
+        answer: { type: "string" },
+      },
+      required: ["task_id", "answer"],
+    },
+  },
+  {
+    name: "withdraw_question",
+    description:
+      "Take back a question you asked, because you have worked it out. The task goes straight back to being claimed by you.",
     inputSchema: {
       type: "object",
       properties: { task_id: { type: "string" } },

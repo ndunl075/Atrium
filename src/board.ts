@@ -44,6 +44,9 @@ const TASK_EVENT_TYPES = [
   "task.submitted",
   "task.accepted",
   "task.rejected",
+  "task.input_requested",
+  "task.input_supplied",
+  "task.input_withdrawn",
   "task.escalated",
   "task.unescalated",
 ] as const;
@@ -339,6 +342,152 @@ export function renewClaim(room: Room, actorId: MemberId, taskId: TaskId): Task 
       expiresAt,
     });
 
+    return requireTask(readBoard(room), taskId);
+  });
+}
+
+/**
+ * The holder of a claim saying it cannot go on without something.
+ *
+ * ARCHITECTURE.md §12.6. The task stays claimed by whoever asked — asking is
+ * not giving up — and its claim stops expiring, so a question left overnight
+ * does not cost the asker its place (see `applyDerivedState` for why that
+ * cannot strand the task forever).
+ *
+ * Only the holder may ask, because the question is "I cannot continue", which
+ * is not a thing a bystander can say on somebody else's behalf.
+ */
+export function askForInput(
+  room: Room,
+  actorId: MemberId,
+  taskId: TaskId,
+  question: string,
+): Task {
+  room.assertUsable();
+  room.member(actorId);
+
+  const text = question?.trim();
+  if (!text) {
+    throw new InvalidError(
+      "A question needs to say what you are waiting for, or nobody can answer it.",
+    );
+  }
+
+  return room.log.transaction(() => {
+    const task = requireTask(readBoard(room), taskId);
+
+    if (task.state === "needs_input") {
+      throw new ConflictError(
+        `Task ${taskId} is already waiting on an answer: "${task.pendingQuestion?.text}". ` +
+          "Withdraw that question before asking another.",
+        { taskId, pendingQuestion: task.pendingQuestion?.text },
+      );
+    }
+    if (task.state !== "claimed" || !task.claimedBy) {
+      throw new InvalidError(
+        `Task ${taskId} is ${task.state}, not claimed, so there is no work in progress ` +
+          "to be stuck on. Claim it first.",
+        { taskId, state: task.state },
+      );
+    }
+    if (task.claimedBy !== actorId) {
+      throw new PermissionError(
+        `Task ${taskId} is claimed by ${task.claimedBy}, not you. Only the member doing ` +
+          "the work can say it is stuck.",
+        { taskId, claimedBy: task.claimedBy },
+      );
+    }
+
+    room.log.append(actorId, "task.input_requested", {
+      taskId,
+      memberId: actorId,
+      question: text,
+    });
+    return requireTask(readBoard(room), taskId);
+  });
+}
+
+/**
+ * Answering somebody else's question, which puts the task back to work.
+ *
+ * The answer goes on the log rather than to the asker, so it is there for
+ * whoever picks the task up — which need not be the member that asked, if the
+ * asker has since died and the refreshed claim lapses.
+ *
+ * The asker cannot answer itself. Not because self-answering is dangerous the
+ * way self-acceptance is, but because `needs_input` means "I could not work
+ * this out", and a member that has worked it out after all wants
+ * `withdrawQuestion`, which says that plainly instead of leaving a log where
+ * somebody appears to have told themselves something.
+ */
+export function supplyInput(
+  room: Room,
+  actorId: MemberId,
+  taskId: TaskId,
+  answer: string,
+): Task {
+  room.assertUsable();
+  room.member(actorId);
+
+  const text = answer?.trim();
+  if (!text) {
+    throw new InvalidError("An answer cannot be empty; the task is waiting on something.");
+  }
+
+  return room.log.transaction(() => {
+    const task = requireTask(readBoard(room), taskId);
+
+    if (task.state !== "needs_input" || !task.pendingQuestion) {
+      throw new InvalidError(
+        `Task ${taskId} is ${task.state} and is not waiting on anything.`,
+        { taskId, state: task.state },
+      );
+    }
+    if (task.pendingQuestion.by === actorId) {
+      throw new PermissionError(
+        `You asked this question, so you cannot also answer it. If you have worked it ` +
+          "out yourself, withdraw the question instead.",
+        { taskId },
+      );
+    }
+
+    room.log.append(actorId, "task.input_supplied", {
+      taskId,
+      memberId: actorId,
+      answer: text,
+      expiresAt: addSeconds(now(), room.config.claimSeconds),
+    });
+    return requireTask(readBoard(room), taskId);
+  });
+}
+
+/** The asker taking its own question back, having resolved it. */
+export function withdrawQuestion(room: Room, actorId: MemberId, taskId: TaskId): Task {
+  room.assertUsable();
+  room.member(actorId);
+
+  return room.log.transaction(() => {
+    const task = requireTask(readBoard(room), taskId);
+
+    if (task.state !== "needs_input" || !task.pendingQuestion) {
+      throw new InvalidError(
+        `Task ${taskId} is ${task.state} and is not waiting on anything.`,
+        { taskId, state: task.state },
+      );
+    }
+    if (task.pendingQuestion.by !== actorId) {
+      throw new PermissionError(
+        `That question was asked by ${task.pendingQuestion.by}, not you. Answer it instead ` +
+          "of withdrawing somebody else's.",
+        { taskId, askedBy: task.pendingQuestion.by },
+      );
+    }
+
+    room.log.append(actorId, "task.input_withdrawn", {
+      taskId,
+      memberId: actorId,
+      expiresAt: addSeconds(now(), room.config.claimSeconds),
+    });
     return requireTask(readBoard(room), taskId);
   });
 }

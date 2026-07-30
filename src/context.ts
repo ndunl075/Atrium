@@ -554,6 +554,15 @@ function describeEvent(
         ? `${actorName(event.data.memberId)} noted on task ${taskLabel(event.data.taskId)}: ${event.data.text}`
         : `${actorName(event.data.memberId)} noted: ${event.data.text}`;
 
+    case "task.input_requested":
+      return `${actorName(event.data.memberId)} is stuck on ${taskLabel(event.data.taskId)} and asked: ${event.data.question}`;
+
+    case "task.input_supplied":
+      return `${actorName(event.data.memberId)} answered on ${taskLabel(event.data.taskId)}: ${event.data.answer}`;
+
+    case "task.input_withdrawn":
+      return `${actorName(event.data.memberId)} withdrew its question on ${taskLabel(event.data.taskId)} and carried on.`;
+
     case "room.halted":
       return `Room halted: ${event.data.reason}`;
 

@@ -43,6 +43,17 @@ export interface Member {
 export type TaskState =
   | "open"
   | "claimed"
+  /**
+   * Started, and stuck: the holder needs something before it can go on.
+   *
+   * ARCHITECTURE.md §12.6, from A2A's task lifecycle. Without this a blocked
+   * agent has three bad options — release the claim and lose its place, sit on
+   * it until the lease lapses, or guess — and guessing is the one an LLM
+   * picks. It is also the one that produces the plausible-but-wrong output §5
+   * exists to catch, so the absence of this state was quietly pushing work
+   * toward the failure the whole project is about.
+   */
+  | "needs_input"
   | "submitted"
   | "accepted"
   | "rejected"
@@ -110,6 +121,11 @@ export interface Task {
   /** Paths the submitter says it touched. */
   submittedArtifacts?: string[];
   submissionSummary?: string;
+
+  /** Set while the task is in `needs_input`: what the holder is waiting for. */
+  pendingQuestion?: { by: MemberId; text: string; at: string };
+  /** The last answer the task received, kept after it goes back to work. */
+  lastAnswer?: { by: MemberId; text: string; at: string };
 
   /** How many times handed-in work has been turned down. */
   attempts: number;
@@ -218,6 +234,39 @@ export interface EventMap {
     via: AcceptanceKind;
     reason: string;
   };
+  /**
+   * The holder of a claim saying it cannot go on without something.
+   *
+   * The question and its answer are events, not a message between two
+   * members. That is what keeps this inside the §2 thesis instead of
+   * reintroducing the handoff it argues against: a third agent reading the
+   * room afterwards sees the question, the answer, and what was done with
+   * them, in order, without anybody having summarised anything.
+   */
+  "task.input_requested": { taskId: TaskId; memberId: MemberId; question: string };
+  /**
+   * Somebody other than the asker answering it.
+   *
+   * `expiresAt` is a *fresh* claim window, not the remains of the old one.
+   * A claim stops expiring while a task waits (see `applyDerivedState`),
+   * because a question left overnight should not cost the asker its place —
+   * so by the time an answer arrives the original window is usually long
+   * past, and restoring it would drop the task the instant it was unblocked.
+   *
+   * This is also what answers the objection §12.6 raised against pausing at
+   * all. If the asker died right after asking, the answer hands it a fresh
+   * window it will never renew, and the claim lapses normally a moment later.
+   * The task returns to the board on its own; nothing is held forever.
+   */
+  "task.input_supplied": {
+    taskId: TaskId;
+    memberId: MemberId;
+    answer: string;
+    expiresAt: string;
+  };
+  /** The asker withdrawing its own question, having resolved it. */
+  "task.input_withdrawn": { taskId: TaskId; memberId: MemberId; expiresAt: string };
+
   "task.escalated": { taskId: TaskId; attempts: number };
   /** Only a human can record this: it is what un-freezes an escalated task. */
   "task.unescalated": { taskId: TaskId };
@@ -362,6 +411,9 @@ const EVENT_TYPE_REGISTRY: Record<EventType, true> = {
   "task.submitted": true,
   "task.accepted": true,
   "task.rejected": true,
+  "task.input_requested": true,
+  "task.input_supplied": true,
+  "task.input_withdrawn": true,
   "task.escalated": true,
   "task.unescalated": true,
   "artifact.written": true,

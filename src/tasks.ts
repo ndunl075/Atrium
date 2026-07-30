@@ -9,10 +9,16 @@
  * The state machine, from ARCHITECTURE.md:
  *
  *     open -> claimed -> submitted -> accepted
- *                            |
- *                        rejected -> open
+ *              |  ^          |
+ *              v  |      rejected -> open
+ *         needs_input
  *       |
  *    blocked -> open
+ *
+ * `needs_input` is the holder saying it cannot go on without something. The
+ * claim is kept throughout — that is the difference between asking and giving
+ * up — and an answer, or the asker withdrawing its own question, puts the task
+ * straight back to `claimed`.
  *
  * Two things are worked out here rather than stored:
  *
@@ -150,6 +156,46 @@ export function foldTasks(
         break;
       }
 
+      case "task.input_requested": {
+        const task = tasks.get(event.data.taskId);
+        if (!task) break;
+        // The claim is kept. The holder has not given the work up; it is
+        // waiting, which is the whole difference between this and releasing.
+        task.state = "needs_input";
+        task.pendingQuestion = {
+          by: event.data.memberId,
+          text: event.data.question,
+          at: event.ts,
+        };
+        task.seq = event.seq;
+        break;
+      }
+
+      case "task.input_supplied": {
+        const task = tasks.get(event.data.taskId);
+        if (!task) break;
+        task.state = "claimed";
+        task.claimExpiresAt = event.data.expiresAt;
+        delete task.pendingQuestion;
+        task.lastAnswer = {
+          by: event.data.memberId,
+          text: event.data.answer,
+          at: event.ts,
+        };
+        task.seq = event.seq;
+        break;
+      }
+
+      case "task.input_withdrawn": {
+        const task = tasks.get(event.data.taskId);
+        if (!task) break;
+        task.state = "claimed";
+        task.claimExpiresAt = event.data.expiresAt;
+        delete task.pendingQuestion;
+        task.seq = event.seq;
+        break;
+      }
+
       case "task.escalated": {
         const task = tasks.get(event.data.taskId);
         if (!task) break;
@@ -188,6 +234,14 @@ function applyDerivedState(
   at: string,
 ): void {
   // A claim that has run out frees the task, whether or not anybody noticed.
+  //
+  // `needs_input` is deliberately not included, and the omission is load-
+  // bearing rather than incidental: a task waiting on a person must not lose
+  // its claim because the question was asked at five o'clock. What stops that
+  // becoming a claim held forever by a worker that died right after asking is
+  // that answering hands out a *fresh* window (see `task.input_supplied`),
+  // which a dead worker never renews — so the task lapses back onto the board
+  // a moment after it is unblocked, without anyone having to sweep for it.
   if (task.state === "claimed" && task.claimExpiresAt && hasPassed(task.claimExpiresAt, at)) {
     task.state = "open";
     delete task.claimedBy;
