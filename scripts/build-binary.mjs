@@ -39,32 +39,49 @@ const exeName = isWindows ? "atrium.exe" : "atrium";
 const exePath = join(BUILD, exeName);
 
 /**
- * `npx` needs a shell on Windows, because what actually exists there is
- * `npx.cmd` and only the shell knows that. Node itself must NOT get one: its
- * path is `C:\Program Files\nodejs\node.exe`, and a Windows shell splits that
- * at the space and reports that `C:\Program` is not a command.
+ * Nothing here runs through a shell, and nothing is fetched at build time.
+ *
+ * The obvious way to reach these tools is `npx`, which on Windows means
+ * `npx.cmd`, which means `shell: true`. That works, and then quietly poisons
+ * every argument: a Windows shell strips the quotes out of
+ * `--define:X="1.0"`, so the quotes have to be escaped — and the escaped form
+ * is passed through literally on Linux and macOS, where there is no shell to
+ * remove them, and esbuild rejects a define value of `\"0.2.0\"`. That is not
+ * hypothetical: it shipped, passed on Windows, and failed on both other
+ * platforms the first time the release matrix ran.
+ *
+ * Dropping the shell is not enough either, because Node refuses to spawn a
+ * `.cmd` without one (the fix for CVE-2024-27980), so `npx.cmd` fails with
+ * EINVAL.
+ *
+ * So the tools are ordinary devDependencies, invoked as the JavaScript files
+ * they are. No shell, so every argument arrives exactly as written on every
+ * platform; and no `npx --yes`, so a release build resolves the same versions
+ * the lockfile pins rather than whatever the registry serves that morning.
  */
-function run(cmd, args, { shell = false } = {}) {
-  execFileSync(cmd, args, { stdio: "inherit", shell });
+function run(cmd, args) {
+  execFileSync(cmd, args, { stdio: "inherit" });
 }
 
-function runNpx(args) {
-  run("npx", args, { shell: isWindows });
+function runNode(script, args) {
+  run(process.execPath, [script, ...args]);
 }
+
+const ESBUILD = join("node_modules", "esbuild", "bin", "esbuild");
+const POSTJECT = join("node_modules", "postject", "dist", "cli.js");
 
 mkdirSync(BUILD, { recursive: true });
 
 console.log(`> bundling (version ${pkg.version})`);
-runNpx([
-  "--yes",
-  "esbuild@0.24",
+runNode(ESBUILD, [
   "src/sea.ts",
   "--bundle",
   "--platform=node",
   "--format=cjs",
   "--target=node22",
-  // Quoting matters on Windows, where the shell eats bare double quotes.
-  `--define:__ATRIUM_VERSION__=\\"${pkg.version}\\"`,
+  // Plain JSON quoting, which is what esbuild wants. No shell escaping,
+  // because there is no shell — see `run` above for why that matters.
+  `--define:__ATRIUM_VERSION__="${pkg.version}"`,
   `--outfile=${join(BUILD, "atrium.cjs")}`,
 ]);
 
@@ -88,11 +105,7 @@ copyFileSync(process.execPath, exePath);
 if (!isWindows) chmodSync(exePath, 0o755);
 
 console.log("> injecting");
-runNpx([
-  "--yes",
-  // Pinned: postject has no 1.0.0 release, only alphas, and `@latest` on a
-  // package like that is a build that breaks on somebody else's schedule.
-  "postject@1.0.0-alpha.6",
+runNode(POSTJECT, [
   exePath,
   "NODE_SEA_BLOB",
   join(BUILD, "sea-prep.blob"),
