@@ -14,6 +14,12 @@
  * sees the task open; the other sees it already claimed and gets a
  * `ConflictError`, because by the time its transaction actually runs, the log
  * has moved on underneath it.
+ *
+ * `renewClaim` does not need that same scrutiny for a different reason: it
+ * never decides who holds a task, only how much longer whoever already holds
+ * it gets to keep it, and it refuses the moment that stops being true (see
+ * its own doc comment for why an already-lapsed claim is refused rather than
+ * quietly resurrected).
  */
 
 import { ConflictError, InvalidError, NotFoundError, PermissionError } from "./errors.js";
@@ -32,6 +38,7 @@ import { addSeconds, hasPassed, newId, now } from "./util.js";
 const TASK_EVENT_TYPES = [
   "task.created",
   "task.claimed",
+  "task.claim_renewed",
   "task.released",
   "task.submitted",
   "task.accepted",
@@ -194,6 +201,101 @@ export function claimTask(room: Room, actorId: MemberId, taskId: TaskId): Task {
 
     const expiresAt = addSeconds(now(), room.config.claimSeconds);
     room.log.append(actorId, "task.claimed", {
+      taskId,
+      memberId: actorId,
+      expiresAt,
+    });
+
+    return requireTask(readBoard(room), taskId);
+  });
+}
+
+/**
+ * Extends a claim `actorId` already holds — the task-board equivalent of
+ * `renewLease` in leases.ts, and modeled closely on it: same shape, same
+ * "only the holder renews its own" rule, same approach of appending a fresh
+ * expiry rather than mutating anything in place.
+ *
+ * Three refusals are kept distinct rather than folded into one message,
+ * because each is a different fact about the world and an agent that acted
+ * on the wrong one would make a different mistake:
+ *
+ * - **Never claimed at all** (or the claim already moved on to submitted,
+ *   accepted, or rejected) — there is nothing here to renew.
+ * - **Somebody else holds the claim** — renewing is not a way to take over
+ *   another member's work, any more than `releaseTask` lets a non-holder
+ *   release one.
+ * - **The holder's own claim already lapsed.** This is the interesting case.
+ *   `foldTasks` already treats a lapsed claim as freeing the task the
+ *   instant it lapses (tasks.ts), so by the time this function is asked to
+ *   renew it, the task has already been genuinely open — not just on a
+ *   technicality — for however long it took the caller to notice and call
+ *   this. Somebody else may have claimed it in that window. Quietly
+ *   extending the old expiry would let two workers both believe they hold
+ *   the same task, which is exactly the failure `claimTask`'s
+ *   compare-and-swap exists to prevent — a renewal that resurrects a claim
+ *   after the fact would be reintroducing that same race through a side
+ *   door, just later. So a lapsed claim is refused outright, and the
+ *   message points at `claimTask`: claiming the task fresh goes through the
+ *   one codepath that actually re-checks the board against the log, and
+ *   either succeeds (nobody beat you to it) or fails with the same
+ *   `ConflictError` any other losing claim gets. `renewClaim` only ever
+ *   extends a claim that is still genuinely live; it never revives one that
+ *   has already died.
+ *
+ * The practical upshot: call this *before* `claimExpiresAt` (returned by
+ * `getTask`), not after.
+ */
+export function renewClaim(room: Room, actorId: MemberId, taskId: TaskId): Task {
+  room.assertUsable();
+  room.member(actorId); // fails loudly on a bogus actor rather than a bogus renewal
+
+  return room.log.transaction(() => {
+    const at = now();
+    // Folded at the epoch, the same trick sweepExpiredClaims uses above:
+    // this shows whether the log has an unreleased task.claimed for this
+    // task at all, regardless of whether the wall clock has since carried it
+    // past its expiry. The live board (readBoard, folded at `at`) cannot
+    // tell "never claimed" apart from "claimed and lapsed" — both read as
+    // state "open" with no claimedBy — and that distinction is the entire
+    // point of this function's error messages.
+    const raw = requireTask(
+      foldTasks(room.log.read({ types: [...TASK_EVENT_TYPES] }), {
+        maxAttempts: room.config.maxAttempts,
+        at: EPOCH,
+      }),
+      taskId,
+    );
+
+    if (raw.state !== "claimed") {
+      throw new InvalidError(
+        `Task ${taskId} is not claimed, so there is nothing to renew. Call ` +
+          "claim_task if you want to take it.",
+        { taskId, state: raw.state },
+      );
+    }
+    if (raw.claimedBy !== actorId) {
+      throw new PermissionError(
+        `Task ${taskId} is claimed by ${raw.claimedBy}, not you. Only the ` +
+          "member holding a claim can renew it.",
+        { taskId, claimedBy: raw.claimedBy },
+      );
+    }
+    // raw.state === "claimed" guarantees claimExpiresAt was set by
+    // task.claimed or task.claim_renewed and has not been cleared since.
+    if (hasPassed(raw.claimExpiresAt!, at)) {
+      throw new ConflictError(
+        `Your claim on ${taskId} expired at ${raw.claimExpiresAt}, so the ` +
+          "task already went back on the board; somebody else may have " +
+          "claimed it since. Call claim_task instead of renew_claim — it " +
+          "will succeed if the task is still open, or say plainly if " +
+          "somebody else got there first.",
+        { taskId, claimExpiresAt: raw.claimExpiresAt },
+      );
+    }
+
+    const expiresAt = addSeconds(at, room.config.claimSeconds);
+    room.log.append(actorId, "task.claim_renewed", {
       taskId,
       memberId: actorId,
       expiresAt,

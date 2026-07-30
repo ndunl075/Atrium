@@ -26,7 +26,7 @@ import {
   listLeases,
   releaseLease,
 } from "./leases.js";
-import { claimTask, createTask, getTask, listTasks } from "./board.js";
+import { claimTask, createTask, getTask, listTasks, renewClaim } from "./board.js";
 import { describeHistory, getContext, listPinned, pinArtifact, unpinArtifact } from "./context.js";
 import { costSummary, reportCost } from "./cost.js";
 import { InvalidError, isAtriumError } from "./errors.js";
@@ -205,6 +205,13 @@ export class RoomServer {
 
       case "claim_task":
         return claimTask(
+          this.room,
+          this.requireMember().id,
+          str(args, "task_id") as TaskId,
+        );
+
+      case "renew_claim":
+        return renewClaim(
           this.room,
           this.requireMember().id,
           str(args, "task_id") as TaskId,
@@ -750,6 +757,16 @@ const TOOLS: ToolDefinition[] = [
     name: "claim_task",
     description:
       "Take a task. Exactly one member can hold a claim, so this fails if somebody got there first — re-read the board and pick another. Claims lapse, so a crash does not wedge the task.",
+    inputSchema: {
+      type: "object",
+      properties: { task_id: { type: "string" } },
+      required: ["task_id"],
+    },
+  },
+  {
+    name: "renew_claim",
+    description:
+      "Extend your claim on a task before it lapses. Claims expire after a fixed number of seconds so a crashed worker cannot wedge a task forever — call get_task and check claimExpiresAt to find out how much time you actually have left, and call this well before that if the work is going to take longer, which most real work does. Refuses if you never held this claim, if somebody else holds it now, or — the case to watch for — if yours already lapsed: once that happens the task is back on the board and somebody else may have claimed it, so this will not resurrect the old claim. Call claim_task again instead; it will succeed if the task is still open.",
     inputSchema: {
       type: "object",
       properties: { task_id: { type: "string" } },
