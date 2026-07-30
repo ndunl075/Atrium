@@ -1,0 +1,57 @@
+name: CI
+
+# Pull requests are the point: this repo has merged thirty-odd of them with no
+# checks at all, which is how a suite that failed two runs in three went
+# unnoticed until somebody happened to run it enough times in a row to see the
+# pattern. Also on pushes to main, so a merge that goes wrong is visible on the
+# branch itself and not only on the pull request that preceded it.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} · node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Every combination reports, rather than the first red one cancelling the
+      # rest. A failure that happens only on macOS is exactly the thing this
+      # matrix exists to find, and it is worth nothing if a Linux failure hides
+      # it.
+      fail-fast: false
+      matrix:
+        # Development has happened entirely on Windows. Linux and macOS are
+        # here because parts of this codebase have a POSIX branch that has
+        # never once executed — the process-group kill in acceptance.ts is
+        # written for a platform nothing has run it on.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        # 22 is the floor package.json declares, and it is the floor for a
+        # reason: node:sqlite arrived in 22.5. Testing the floor and the
+        # current release catches both "we broke the minimum we promise" and
+        # "the next Node breaks us".
+        node: [22, 24]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # `ci` rather than `install`: it installs exactly what the lockfile says
+      # and fails if the two have drifted, which is the check worth having on a
+      # project whose whole pitch is a dependency list you can read.
+      - run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Test
+        run: npm test
+
+      # The package ships `dist`, so a build that fails is a broken release
+      # even when every test passes.
+      - name: Build
+        run: npm run build

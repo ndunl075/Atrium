@@ -8,6 +8,10 @@
   <strong>A shared workspace that multiple AI agents join in order to do one job together.</strong>
 </p>
 
+<p align="center">
+  <a href="https://github.com/ndunl075/Atrium/actions/workflows/ci.yml"><img src="https://github.com/ndunl075/Atrium/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+</p>
+
 Atrium is not a framework for building agents. It does not define agent
 personalities, prompt templates, or reasoning loops. Agents arrive already
 built, from whatever stack they came from, and Atrium gives them a room to work
