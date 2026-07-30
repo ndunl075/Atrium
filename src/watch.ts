@@ -208,6 +208,23 @@ section > h2 {
 .task .id { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); }
 .task .extra { font-size: 13px; color: var(--ink-soft); margin-top: 4px; }
 .task .extra em { font-style: normal; color: var(--state-rejected); }
+.board-tools {
+  display: flex; align-items: center; gap: 10px; margin: -2px 0 14px;
+}
+.board-tools label {
+  font-family: var(--mono); font-size: 11px; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--ink-faint);
+}
+.board-tools input {
+  min-width: 240px; flex: 0 1 420px;
+  font-family: var(--sans); font-size: 13px; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 4px; padding: 7px 9px;
+}
+.board-tools input:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+.board-tools output { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); }
 
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
@@ -499,7 +516,32 @@ function clientScript(fromSeq: number): string {
 (function () {
   var log = document.getElementById("log");
   var status = document.getElementById("status");
+  var taskFilter = document.getElementById("task-filter");
+  var taskFilterStatus = document.getElementById("task-filter-status");
   var src = new EventSource("/events?from=${fromSeq}");
+
+  function applyTaskFilter() {
+    var board = document.getElementById("board");
+    if (!board || !taskFilter) return;
+    var query = taskFilter.value.trim().toLowerCase();
+    var total = 0;
+    var visible = 0;
+    board.querySelectorAll(".stategroup").forEach(function (group) {
+      var groupVisible = 0;
+      group.querySelectorAll(".task").forEach(function (task) {
+        total += 1;
+        var heading = group.querySelector("h3");
+        var haystack = (task.textContent + " " + (heading ? heading.textContent : "")).toLowerCase();
+        var matches = !query || haystack.includes(query);
+        task.hidden = !matches;
+        if (matches) { visible += 1; groupVisible += 1; }
+      });
+      group.hidden = groupVisible === 0;
+    });
+    if (taskFilterStatus) {
+      taskFilterStatus.textContent = query ? visible + " of " + total + " tasks" : "";
+    }
+  }
 
   function flash(el) {
     if (!el) return;
@@ -511,6 +553,7 @@ function clientScript(fromSeq: number): string {
     var el = document.getElementById(id);
     if (!el) return;
     el.innerHTML = html;
+    if (id === "board") applyTaskFilter();
     flash(el);
   }
 
@@ -559,6 +602,10 @@ function clientScript(fromSeq: number): string {
     // keep looking like the rest of a page that is still moving.
     document.body.classList.add("stale");
   };
+  if (taskFilter) {
+    taskFilter.addEventListener("input", applyTaskFilter);
+    applyTaskFilter();
+  }
 })();`;
 }
 
@@ -588,7 +635,14 @@ function renderRoomPage(room: Room): string {
 </header>
 <div id="halted">${room.isHalted() ? HALTED_NOTE : ""}</div>
 <section><h2>Brief ${renderContextBudget(context)}</h2><div id="brief">${renderBrief(room, context)}</div></section>
-<section><h2>Board</h2><div id="board">${renderBoard(tasks, names)}</div></section>
+<section><h2>Board</h2>
+  <div class="board-tools">
+    <label for="task-filter">Filter tasks</label>
+    <input id="task-filter" type="search" placeholder="title, id, state, member..." autocomplete="off">
+    <output id="task-filter-status" aria-live="polite"></output>
+  </div>
+  <div id="board">${renderBoard(tasks, names)}</div>
+</section>
 <section><h2>Members</h2><div id="roster">${renderRoster(room)}</div></section>
 <section><h2>Artifacts</h2><div id="artifacts">${renderArtifacts(room)}</div></section>
 <section><h2>Event log</h2><ul id="log">${lines.map(renderLogLine).join("")}</ul></section>

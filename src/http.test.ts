@@ -47,6 +47,48 @@ describe("serveHttp", () => {
     expect(handle.host).toBe("127.0.0.1");
     expect(handle.port).toBeGreaterThan(0);
     expect(handle.url).toBe(`http://127.0.0.1:${handle.port}/mcp`);
+    expect(handle.healthUrl).toBe(`http://127.0.0.1:${handle.port}/health`);
+  });
+
+  it("exposes an unauthenticated liveness check without exposing room content", async () => {
+    const room = tempRoom({ name: "private-room-name" });
+    room.join({ name: "private-member-name", role: "worker" });
+    const handle = await startServer(room);
+
+    const res = await fetch(handle.healthUrl!);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    const body = (await res.json()) as any;
+    expect(body).toEqual({ status: "ok", head: room.log.head() });
+    expect(JSON.stringify(body)).not.toContain("private-room-name");
+    expect(JSON.stringify(body)).not.toContain("private-member-name");
+  });
+
+  it("supports HEAD health checks and lets an operator disable the route", async () => {
+    const room = tempRoom();
+    const handle = await serveHttp(room, { port: 0, healthPath: false });
+    servers.push(handle);
+
+    expect(handle.healthUrl).toBeUndefined();
+    expect((await fetch(handle.url.replace(/\/mcp$/, "/health"))).status).toBe(404);
+
+    const enabled = await startServer(room);
+    const res = await fetch(enabled.healthUrl!, { method: "HEAD" });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("");
+  });
+
+  it("reports a halted room without treating the healthy server as unavailable", async () => {
+    const room = tempRoom({ config: { actionBudget: 2 } });
+    room.join({ name: "first", role: "worker" });
+    expect(() => room.join({ name: "over-budget", role: "worker" })).toThrow();
+    const handle = await startServer(room);
+
+    const res = await fetch(handle.healthUrl!);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "halted", head: room.log.head() });
   });
 
   it("runs a tool call end to end with a valid bearer token", async () => {
