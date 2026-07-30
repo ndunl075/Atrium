@@ -3,7 +3,7 @@
 **An open source office for AI agents to get context, coordinate, and finish real work.**
 
 Status: pre-implementation design draft
-Last updated: 2026-07-27
+Last updated: 2026-07-29
 
 ---
 
@@ -199,6 +199,30 @@ Tools exposed: `join`, `get_context`, `search_artifacts`, `list_tasks`, `claim_t
 
 Read-only local web view: board state, live event stream, artifact diffs. Deferred past v1. It is the most demo-able part of the project and therefore the most tempting thing to build first, which is exactly why it should be built last.
 
+### 7.4 Thin runner `[OPEN]`
+
+Atrium coordinates work today, but deliberately does not launch agents. A
+separate, optional `atrium run` layer could make a Room operational without
+turning the core into an agent framework:
+
+1. Read the Room brief and board.
+2. Launch agent commands declared by the operator.
+3. Match open tasks to agents using their capability tags.
+4. Monitor claims, failures, retries, and spend reports.
+5. Stop at the acceptance boundary for a command, another agent, or a human.
+
+The runner must not hold a private plan or become a second source of truth. It
+may start workers and react to events, but tasks, dependencies, claims,
+artifacts, acceptance, and history remain in the Room. Agents still coordinate
+through shared state rather than direct messages.
+
+**Atrium holds the truth; the runner manages the workers.**
+
+Keeping the runner outside the core preserves framework agnosticism: Codex,
+Claude Code, a shell script, or a third-party agent framework can all be
+configured as worker commands. A human or an existing agent can perform the
+same orchestration manually without the runner.
+
 ---
 
 ## 8. Stack `[ASSUMPTION]`
@@ -246,6 +270,7 @@ Explicitly cut from v0.1: web UI, embeddings, remote or multi-machine Rooms, aut
 4. Cost enforcement without controlling model calls. §6
 5. License. `[OPEN]` Apache 2.0 is the safe default for infrastructure intended for adoption. MIT if you want maximum uptake and do not care about patent grants.
 6. Whether this stays a side project or becomes a thing. Answer it deliberately rather than by drift.
+7. Whether the optional thin runner belongs in this repository or should be a separate adapter package. §7.4
 
 ---
 

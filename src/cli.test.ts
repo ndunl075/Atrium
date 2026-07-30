@@ -30,6 +30,7 @@ import {
   cmdOpen,
   cmdReplay,
   cmdRoster,
+  cmdRun,
   cmdSearch,
   cmdServe,
   cmdTaskAdd,
@@ -1956,5 +1957,34 @@ describe("roster", () => {
     const code = cmdRoster([dir], s);
     expect(code).toBe(0);
     expect(s.outLines.join("\n")).toMatch(/Nobody has joined/);
+  });
+});
+
+describe("run", () => {
+  it("shows the worker environment contract in help", async () => {
+    const s = sink();
+    const code = await cmdRun(["--help"], s);
+
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toContain("ATRIUM_TASK_ID");
+    expect(s.outLines.join("\n")).toContain("--dry-run");
+  });
+
+  it("prints a bounded assignment plan without launching workers", async () => {
+    const { dir, room } = tempRoom();
+    const owner = room.join({ name: "owner", role: "human" }).member;
+    const task = createTask(room, owner.id, { title: "Build the adapter" });
+    const s = sink();
+
+    const code = await cmdRun(
+      [dir, "--worker", "codex=node worker.mjs", "--dry-run"],
+      s,
+    );
+
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toContain("codex");
+    expect(s.outLines.join("\n")).toContain(task.id);
+    expect(s.outLines.join("\n")).toContain("Build the adapter");
+    expect(s.outLines.join("\n")).toMatch(/no workers were launched/i);
   });
 });

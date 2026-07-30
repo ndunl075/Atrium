@@ -9,6 +9,10 @@
 </p>
 
 <p align="center">
+  <img src="assets/atrium-courtyard.jpg" alt="An illustrated shared atrium where work flows through a central board" width="900">
+</p>
+
+<p align="center">
   <a href="https://github.com/ndunl075/Atrium/actions/workflows/ci.yml"><img src="https://github.com/ndunl075/Atrium/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
 </p>
 
@@ -139,6 +143,29 @@ node dist/cli.js diff draft.md ./newsroom     # what changed between the last tw
 node dist/cli.js roster ./newsroom            # who's here, their tags, and their self-reported manifest
 node dist/cli.js watch ./newsroom             # a read-only web view, live in a browser
 ```
+
+Or run one bounded dispatch pass with operator-configured worker commands.
+Save this as `newsroom/.atrium/runner.json`:
+
+```json
+{
+  "workers": [
+    { "name": "codex", "command": "node ./codex-worker.mjs" },
+    { "name": "claude", "command": "node ./claude-worker.mjs" }
+  ],
+  "maxConcurrent": 2
+}
+```
+
+```sh
+node dist/cli.js run ./newsroom --dry-run
+node dist/cli.js run ./newsroom
+```
+
+The runner puts the room and assignment in `ATRIUM_ROOM`,
+`ATRIUM_TASK_ID`, `ATRIUM_TASK_TITLE`, `ATRIUM_TASK_DESCRIPTION`, and
+`ATRIUM_WORKER_NAME`. A launched worker still joins and claims through Atrium;
+the runner never keeps a second private task board.
 
 Or put a hand on the board yourself, the same way a human member would:
 

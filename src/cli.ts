@@ -52,11 +52,14 @@ import {
   resolveArtifact,
   restartTask,
   reviewTask,
+  runRoomOnce,
+  parseRunnerConfig,
   searchArtifacts,
   sweepExpiredClaims,
   toArtifactPath,
   unpinArtifact,
   verifyRoom,
+  loadRunnerConfig,
 } from "./index.js";
 import { serveHttp } from "./http.js";
 import { serveWatch } from "./watch.js";
@@ -69,6 +72,8 @@ import type {
   Member,
   MemberId,
   MemberRole,
+  RunnerConfig,
+  RunnerWorker,
   Task,
   TaskState,
   Verdict,
@@ -2603,6 +2608,7 @@ Commands:
   lease <subcommand>    list (same as "leases") or force-release an artifact lease
   serve [dir]           serve the room to an MCP client over stdin/stdout
   watch [dir]           a read-only web view of the room, live in a browser
+  run [dir]             launch configured workers for one bounded dispatch pass
   task <subcommand>     create, inspect, and administer tasks — see "atrium task --help"
   roster [dir]          every member who has joined, with tags and self-reported manifest
 
@@ -2698,6 +2704,137 @@ export function runCli(argv: string[], sink: Sink): number {
     }
     sink.err(err instanceof Error ? (err.stack ?? err.message) : String(err));
     return 1;
+  }
+}
+
+const RUN_HELP = `atrium run — launch workers for one bounded dispatch pass
+
+Usage: atrium run [dir] [options]
+
+Reads the currently claimable tasks and pairs them with configured worker
+slots. Each command receives its assignment in environment variables:
+
+  ATRIUM_ROOM
+  ATRIUM_TASK_ID
+  ATRIUM_TASK_TITLE
+  ATRIUM_TASK_DESCRIPTION
+  ATRIUM_WORKER_NAME
+
+The worker must still join and claim the task through Atrium. The runner never
+keeps a private task board and never marks work complete.
+
+By default configuration is read from <room>/.atrium/runner.json:
+
+  {
+    "workers": [
+      { "name": "codex", "command": "node ./codex-worker.mjs" },
+      { "name": "claude", "command": "node ./claude-worker.mjs" }
+    ],
+    "maxConcurrent": 2
+  }
+
+Options:
+  --config <path>       read a different runner JSON file
+  --worker <name=cmd>   define a worker slot inline; repeat for more slots
+  --max-workers <n>     override maxConcurrent for this pass
+  --dry-run             print assignments without launching commands
+  --help, -h            show this help
+`;
+
+function inlineRunnerWorker(value: string): RunnerWorker {
+  const equals = value.indexOf("=");
+  const name = equals < 0 ? "" : value.slice(0, equals).trim();
+  const command = equals < 0 ? "" : value.slice(equals + 1).trim();
+  if (!name || !command) {
+    throw new InvalidError(
+      `--worker must be "name=command" (got ${JSON.stringify(value)}).`,
+    );
+  }
+  return { name, command };
+}
+
+export async function cmdRun(argv: string[], sink: Sink): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: {
+      help: { type: "boolean", short: "h" },
+      config: { type: "string" },
+      worker: { type: "string", multiple: true },
+      "max-workers": { type: "string" },
+      "dry-run": { type: "boolean" },
+    },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(RUN_HELP);
+    return 0;
+  }
+  if (positionals.length > 1) {
+    sink.err("run accepts one room directory.");
+    return 2;
+  }
+  if (values.config !== undefined && values.worker !== undefined) {
+    sink.err("Use either --config or --worker, not both.");
+    return 2;
+  }
+
+  let maxConcurrent: number | undefined;
+  if (values["max-workers"] !== undefined) {
+    maxConcurrent = Number(values["max-workers"]);
+    if (!Number.isInteger(maxConcurrent) || maxConcurrent <= 0) {
+      sink.err(
+        `--max-workers must be a positive whole number (got "${values["max-workers"]}").`,
+      );
+      return 2;
+    }
+  }
+
+  const room = openRoom(positionals[0] ?? process.cwd());
+  try {
+    let config: RunnerConfig;
+    if (values.worker !== undefined) {
+      config = parseRunnerConfig({ workers: values.worker.map(inlineRunnerWorker) });
+    } else {
+      config = loadRunnerConfig(room, values.config);
+    }
+    if (maxConcurrent !== undefined) config = { ...config, maxConcurrent };
+
+    const dryRun = values["dry-run"] ?? false;
+    const summary = await runRoomOnce(room, config, {
+      dryRun,
+      hooks: {
+        onStart: ({ worker, task }) => {
+          sink.out(`Starting ${worker.name} on ${task.id} — ${task.title}`);
+        },
+        onExit: ({ worker, task, exitCode }) => {
+          const status = exitCode === 0 ? "finished" : `failed (exit ${exitCode})`;
+          sink.out(`${worker.name} ${status} on ${task.id} — ${task.title}`);
+        },
+      },
+    });
+
+    if (summary.assignments.length === 0) {
+      sink.out("No claimable tasks.");
+      return 0;
+    }
+    if (dryRun) {
+      sink.out(`Dispatch plan (${summary.assignments.length})`);
+      for (const { worker, task } of summary.assignments) {
+        sink.out(`  ${worker.name} → ${task.id} — ${task.title}`);
+      }
+      sink.out(dim("Dry run only; no workers were launched."));
+      return 0;
+    }
+
+    const failures = summary.results.filter((result) => result.exitCode !== 0);
+    sink.out(
+      failures.length === 0
+        ? `Dispatch pass finished: ${summary.results.length} worker(s) exited cleanly.`
+        : `Dispatch pass finished: ${failures.length} of ${summary.results.length} worker(s) failed.`,
+    );
+    return failures.length === 0 ? 0 : 1;
+  } finally {
+    room.close();
   }
 }
 
@@ -2877,10 +3014,10 @@ export function main(): void {
 
   const argv = process.argv.slice(2);
 
-  // serve and watch are the commands that do not finish on their own — one
-  // holds a protocol stream open, the other a web server — so they get their
-  // own path rather than making every other command's handler async.
+  // These commands are asynchronous or do not finish on their own, so they
+  // get their own path rather than making every other handler async.
   const longRunning: Record<string, (args: string[], sink: Sink) => Promise<number>> = {
+    run: cmdRun,
     serve: cmdServe,
     watch: cmdWatch,
   };

@@ -163,3 +163,18 @@ export {
   type VerifySummary,
   type VerifyReport,
 } from "./verify.js";
+export {
+  parseRunnerConfig,
+  loadRunnerConfig,
+  planRunnerAssignments,
+  workerEnvironment,
+  launchWorker,
+  runRoomOnce,
+  type RunnerWorker,
+  type RunnerConfig,
+  type RunnerAssignment,
+  type RunnerResult,
+  type RunnerSummary,
+  type RunnerHooks,
+  type WorkerLauncher,
+} from "./runner.js";
