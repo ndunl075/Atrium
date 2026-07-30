@@ -2,8 +2,8 @@
 
 **An open source office for AI agents to get context, coordinate, and finish real work.**
 
-Status: pre-implementation design draft
-Last updated: 2026-07-29
+Status: v0.2 shipped; building toward v0.3
+Last updated: 2026-07-30
 
 ---
 
@@ -13,11 +13,67 @@ Every substantive claim is tagged:
 
 | Tag | Meaning |
 |---|---|
+| `[SHIPPED]` | Built, tested, and in `main`. The description matches the code. |
 | `[CONFIRMED]` | Decided. Comes directly from stated project intent. |
+| `[PLANNED]` | Decided and scheduled, but not built. See §12 for the queue. |
 | `[ASSUMPTION]` | A design choice made to keep this document coherent. Revisit before building. |
 | `[OPEN]` | Unresolved. Blocks implementation of the section it appears in. |
 
 Do not treat `[ASSUMPTION]` items as settled. They were chosen so the document could be written, not because they were reasoned to.
+
+This document was originally written before any code existed. Sections that have since been built are marked `[SHIPPED]` and have been rewritten to describe what is actually there, not what was intended. Where the two disagreed, the code won.
+
+---
+
+## 0. Implementation status
+
+The honest state of the project as of 2026-07-30. 21.5k lines of TypeScript, 522 tests across 20 files, zero runtime dependencies.
+
+### Built and tested
+
+| Capability | Where | Notes |
+|---|---|---|
+| Append-only event log, totally ordered | `src/log.ts` | SQLite via `node:sqlite`. Source of truth for everything else. |
+| Room lifecycle, config, halting | `src/room.ts`, `src/config.ts` | Action budget and spend caps both halt through `assertUsable`. |
+| Task board, folded from the log | `src/board.ts`, `src/tasks.ts` | No board table. `foldTasks` is the only reader. |
+| Atomic claim under contention | `src/board.ts` | Read-check-write inside one SQLite write transaction. |
+| Acceptance: `command`, `reviewer`, `human`, `none` | `src/acceptance.ts` | Submitter can never be the approver, whatever their role. |
+| Rejection, attempt counting, escalation freeze | `src/tasks.ts`, `src/acceptance.ts` | Freezes at `maxAttempts` and waits for a human. |
+| Artifacts with leases and stale-write rejection | `src/artifacts.ts`, `src/leases.ts` | Optimistic concurrency on the log sequence number. |
+| Content-addressed blob store | `src/snapshots.ts` | Every version's bytes retained, keyed by the hash the log records. |
+| `history` / `diff` across versions | `src/snapshots.ts`, `src/cli.ts` | Refuses to diff a pruned version rather than showing it empty. |
+| `gc` (safe) and `prune` (destructive) | `src/snapshots.ts` | Nothing prunes on a timer; a person runs the command. |
+| Room integrity check | `src/verify.ts` | Distinguishes "pruned" from "damaged" from "never written". |
+| Full-text artifact search | `src/search.ts` | No embeddings, by design (§4 Tier 2). |
+| Room context, pinning, token ceiling | `src/context.ts` | |
+| Self-reported cost accounting, advisory caps | `src/cost.ts` | Advisory only — see §6 for why that ceiling is real. |
+| MCP server over stdio | `src/mcp.ts` | 23 tools. |
+| MCP server over HTTP | `src/http.ts` | `127.0.0.1` only, bearer token required, no anonymous join. |
+| CLI | `src/cli.ts` | 24 commands including `task` administration as an auto-provisioned `human` member. |
+| Read-only Watch UI | `src/watch.ts` | Board, live event stream, artifact diffs, live agent activity. |
+| Thin runner | `src/runner.ts` | Operator-declared worker commands, bounded dispatch pass, `--dry-run`. |
+| Single-file binary build | `scripts/build-binary.mjs`, `src/sea.ts` | |
+| End-to-end workflow test | `src/workflow.test.ts` | research → draft → review with a real rejection. |
+| YAML job declaration | `src/jobs.ts`, `src/yaml.ts` | `atrium init --from job.yaml`. Zero-dependency subset parser. §12.1 |
+
+### Not built
+
+| Capability | Status | Section |
+|---|---|---|
+| Reference worker under `examples/` | `[PLANNED]` — next | §12.1 |
+| `atrium plan` — proposed board from the brief | `[PLANNED]` | §12.2 |
+| `expectedOutput` contract on tasks | `[PLANNED]` | §12.3 |
+| Event stream for external observability | `[PLANNED]` | §12.4 |
+| `manager` role | `[PLANNED]` | §12.5 |
+| Embeddings / semantic search | Deliberately deferred | §4 |
+| Multi-machine rooms | Deliberately deferred | §9 |
+| Enforced (non-advisory) cost caps | `[OPEN]` — may be unsolvable here | §6 |
+
+### Known gaps that are not features
+
+- **Not published to npm.** The README tells clients to run `atrium serve`, but the only working path today is clone → `npm install` → `npm run build` → `node dist/cli.js`. This is the single largest barrier to anyone using the project.
+- **No runnable demo.** The rejection loop is the differentiating idea and it is currently only visible to someone reading `src/workflow.test.ts`. §12.1 shipped the half of the fix that seeds a board from `examples/newsroom.yaml`; the reference worker that drives it is still missing.
+- **The runner has nothing to run.** `atrium run` shells out to operator-written worker commands that this repo does not ship, so the "make it actually go" path requires the user to first build the thing that uses it.
 
 ---
 
@@ -112,6 +168,8 @@ Append-only, totally ordered, the **single source of truth**. The board and the 
 
 This matters more than it sounds. Multi-agent systems fail in ways that are invisible at the time of failure and inexplicable afterward. An ordered log means any run can be replayed, diffed, and explained. Debuggability is the actual product feature here, not a nice-to-have.
 
+It also makes resumability fall out for free rather than needing a mechanism. A room has no in-memory state to lose: every reader folds the log, so a process that dies mid-job and a process that starts fresh a week later are the same case. Frameworks that pass state between agents in memory have to bolt on periodic checkpointing to get this back, and get a *sampled* history for their trouble; here there is nothing to checkpoint, because nothing was ever anywhere else.
+
 ---
 
 ## 4. Getting context
@@ -195,21 +253,27 @@ Tools exposed: `join`, `get_context`, `search_artifacts`, `list_tasks`, `claim_t
 
 `atrium init`, `atrium open <room>`, `atrium board`, `atrium log`, `atrium invite`, `atrium replay <seq>`.
 
-### 7.3 Watch UI `[ASSUMPTION]`
+### 7.3 Watch UI `[SHIPPED]`
 
-Read-only local web view: board state, live event stream, artifact diffs. Deferred past v1. It is the most demo-able part of the project and therefore the most tempting thing to build first, which is exactly why it should be built last.
+`atrium watch <room>` serves a read-only local web view: board state, a live event stream, artifact diffs, and live agent activity. `src/watch.ts`, with `npm run dev` building and launching it against `./demo-room` in one command.
 
-### 7.4 Thin runner `[OPEN]`
+This was originally deferred past v1 on the reasoning that it is the most demo-able part of the project and therefore the most tempting thing to build first. That reasoning held right up until the project needed something a stranger could look at; being able to *see* a rejection land is most of what makes the acceptance model legible to someone who has not read §5.
 
-Atrium coordinates work today, but deliberately does not launch agents. A
-separate, optional `atrium run` layer could make a Room operational without
-turning the core into an agent framework:
+### 7.4 Thin runner `[SHIPPED]`
+
+Atrium coordinates work but deliberately does not launch agents. `atrium run`
+(`src/runner.ts`) is a separate, optional layer that makes a Room operational
+without turning the core into an agent framework:
 
 1. Read the Room brief and board.
-2. Launch agent commands declared by the operator.
-3. Match open tasks to agents using their capability tags.
+2. Launch agent commands declared by the operator in `.atrium/runner.json`.
+3. Hand each worker its assignment through the environment (`ATRIUM_ROOM`, `ATRIUM_TASK_ID`, `ATRIUM_TASK_TITLE`, `ATRIUM_TASK_DESCRIPTION`, `ATRIUM_WORKER_NAME`).
 4. Monitor claims, failures, retries, and spend reports.
 5. Stop at the acceptance boundary for a command, another agent, or a human.
+
+A launched worker still joins and claims through Atrium itself; the runner
+never keeps a second private task board. `--dry-run` shows the dispatch pass
+without launching anything.
 
 The runner must not hold a private plan or become a second source of truth. It
 may start workers and react to events, but tasks, dependencies, claims,
@@ -245,7 +309,7 @@ Dependency budget: keep it small. Every dependency is friction for an OSS contri
 
 Three agents in one Room producing one document, where the reviewer genuinely rejects bad drafts and the rejection genuinely sends work back. Nothing else.
 
-Ships in v0.1:
+Shipped in v0.1 `[SHIPPED]`:
 - Room create and join
 - Event log with replay
 - Task board with atomic claim
@@ -254,9 +318,17 @@ Ships in v0.1:
 - MCP server
 - CLI
 
-Explicitly cut from v0.1: web UI, embeddings, remote or multi-machine Rooms, auth beyond a local token, cost enforcement, agent marketplace, capability ontology, anything involving the word "orchestrator."
+Shipped in v0.2, past the original v0.1 line `[SHIPPED]`: HTTP transport, advisory cost caps, content-addressed artifact history with `history`/`diff`/`gc`/`prune`/`verify`, human task administration from the CLI, the Watch UI, the thin runner, and a single-file binary build.
+
+Explicitly still cut: embeddings, remote or multi-machine Rooms, auth beyond a local token, enforced cost caps, agent marketplace, capability ontology, anything involving the word "orchestrator."
 
 **Definition of done for v0.1:** a stranger clones the repo and gets three agents to produce one reviewed document in under ten minutes, without reading the source.
+
+**This is not met.** Every mechanism it names exists and is tested, but a stranger cannot reach it: the package is not on npm, and there is no shipped job a person can run without first writing their own workers. `src/workflow.test.ts` proves the workflow to a reader of the test suite, which is not the same audience. §12.1 exists to close exactly this gap, and it is the reason it is first in the queue rather than the most interesting item.
+
+### v0.3 target
+
+**Definition of done for v0.3:** a stranger runs one command against a fresh clone and watches an agent's work get rejected and sent back, without writing any configuration.
 
 `[OPEN]` **Time budget.** This was scoped as a side project. Set a real cap in wall-clock hours and write it here. A number you have to look at is harder to blow through than a number you carry around in your head.
 
@@ -264,13 +336,19 @@ Explicitly cut from v0.1: web UI, embeddings, remote or multi-machine Rooms, aut
 
 ## 10. Open questions
 
+Still open:
+
 1. Room metaphor or dispatcher metaphor. Everything above assumes room. §1
 2. Trayce boundary — real distinction or convenient story. §4
 3. Context overflow policy. §6
-4. Cost enforcement without controlling model calls. §6
-5. License. `[OPEN]` Apache 2.0 is the safe default for infrastructure intended for adoption. MIT if you want maximum uptake and do not care about patent grants.
-6. Whether this stays a side project or becomes a thing. Answer it deliberately rather than by drift.
-7. Whether the optional thin runner belongs in this repository or should be a separate adapter package. §7.4
+4. Cost enforcement without controlling model calls. §6 — likely unsolvable from outside the model call; advisory may be the permanent answer.
+5. Whether this stays a side project or becomes a thing. Answer it deliberately rather than by drift.
+6. Whether shipping reference workers (§12.1) makes Atrium an agent framework by the back door. The line held so far is that a worker in `examples/` is a *demonstration* of the MCP interface, not part of the product surface, and nothing in `src/` may import one.
+
+Resolved since first draft:
+
+- ~~License.~~ Apache 2.0, for the patent grant. `LICENSE` is in the repo.
+- ~~Whether the thin runner belongs in this repository.~~ It ships here as `src/runner.ts`, kept honest by the rule in §7.4: it may start workers and react to events, but it holds no private plan and no second board.
 
 ---
 
@@ -281,3 +359,89 @@ Explicitly cut from v0.1: web UI, embeddings, remote or multi-machine Rooms, aut
 **Blackboard control is genuinely unsolved.** §2 states the counterargument honestly. If Rooms thrash in real use, the honest response is to add a lightweight scheduler, not to insist the pattern is pure.
 
 **Open source is distribution, not strategy.** Stars are not adoption and adoption is not revenue. If this is a credibility play, define what a win looks like now — a number of external contributors, a specific person using it, an inbound conversation — so you can tell later whether it worked.
+
+---
+
+## 12. Planned work
+
+Five items, in build order. Several are adapted from CrewAI, which is worth being explicit about, along with the filter used.
+
+CrewAI solves a different problem than Atrium and solves it in the opposite direction: it *defines* agents (role, goal, backstory) and passes each task's output forward as the next task's context. Atrium takes pre-built agents and refuses to pass messages at all. A straight feature port would make this a worse CrewAI. What is worth taking is the parts that address Atrium's actual weakness — nothing here gets a stranger from clone to a working room — without touching the thesis in §2.
+
+**Deliberately not taken, and why:**
+
+- **Agent definitions.** The moment Atrium has an `Agent` class with a role and a backstory, the §1 non-goal is gone and the "any agent from any stack" claim goes with it.
+- **Memory tiers (short-term / long-term / entity).** CrewAI needs three memory systems largely *because* its agents cannot see each other's state; memory is the patch for message-passing being lossy. Atrium has shared artifacts, `CONTEXT.md`, and search. Importing this would be importing a fix for a problem this design already avoids.
+- **Flows (start / listen / router steps).** Imperative orchestration with a state machine on top — message passing with more ceremony. The board's `dependsOn` graph is the declarative equivalent and is the better fit for a blackboard.
+- **Model provider integration (LiteLLM and similar).** Atrium does not make model calls. That is what makes the zero-runtime-dependency claim true, and it is load-bearing for §6's honesty about cost.
+- **Runtime checkpointing.** CrewAI added SQLite checkpoints to resume long-running workflows. The append-only log already does this strictly better. Nothing to take — but §3.5 should claim it, because it currently does not.
+
+### 12.1 YAML job declaration `[SHIPPED]`
+
+A room's board was built one `atrium task add` at a time, which meant the only way to show someone the workflow was a shell script of CLI calls. The job is declared instead:
+
+```yaml
+# job.yaml
+name: newsroom
+context: |-
+  Cover the Henley/Barrow merger for Friday's edition. 800 words, house style.
+tasks:
+  research:
+    title: Gather sources on the merger
+    description: At least four independent sources, each with a working link.
+    acceptance: reviewer
+  draft:
+    title: Write the 800-word piece
+    dependsOn: [research]
+    acceptance: reviewer
+  factcheck:
+    title: Verify every claim in the draft
+    dependsOn: [draft]
+    acceptance: { kind: command, command: "npm run lint:links", timeoutSeconds: 120 }
+```
+
+`atrium init ./newsroom --from job.yaml` seeds the board, the dependency graph, the acceptance rules, and `CONTEXT.md` in one command. `examples/newsroom.yaml` is a worked file. `src/jobs.ts` holds the schema, `src/yaml.ts` the parser.
+
+The acceptance field takes either a bare kind (`acceptance: reviewer`) or the full mapping. It says `kind`, not `type`, because that is the field name everywhere else this shape appears — `Task.acceptance`, MCP's `create_task`, the CLI's `--acceptance`. A file that says `type` gets an error pointing at `kind` rather than a task that silently defaults.
+
+Task keys in the file are local names, resolved to task ids at load time, so `dependsOn` is written by a human without knowing generated ids. Tasks are created dependency-first regardless of the order the file lists them in, keeping file order among tasks that are ready at the same moment.
+
+Everything is validated before the room is created, and a cycle is a load error rather than a runtime deadlock. This ordering is load-bearing rather than tidy: `atrium init` refuses to run twice on a directory, so a file with a typo in it that had already created a half-built room would leave the next attempt with nowhere to go.
+
+`[CONFIRMED]` Unknown keys are refused, with a spelling suggestion where there is an obvious one. `titel:` is a typo, and a loader that skips it produces a task with the wrong title and no complaint.
+
+`[ASSUMPTION]` Parsed with a hand-written subset parser rather than a YAML dependency (`src/yaml.ts`). The subset needed here is small — nested maps, lists, scalars, block strings, single-line flow collections — and the zero-dependency property in §8 is worth more than full YAML conformance. Everything outside the subset throws with a line number instead of being guessed at; anchors, aliases, tags, directives, and multi-document files are refused by name. If the subset starts growing to meet real files, take the dependency; do not grow a half-parser.
+
+Still outstanding for the v0.3 definition of done: this seeds a board, but a stranger still needs a worker to point at it. A shipped reference worker under `examples/` is the remaining half.
+
+### 12.2 `atrium plan` `[PLANNED]`
+
+CrewAI's `planning=True` has a model decompose the goal into a task sequence before execution. Atrium's board is the natural target for this and is currently filled by hand.
+
+`atrium plan ./newsroom` reads `CONTEXT.md` and emits a *proposed* board as a §12.1 job file. A human reads it, edits it, and applies it. Nothing is created until they do.
+
+`[CONFIRMED]` The proposal is never self-applied. A plan that creates its own work and then approves it is §5's failure mode wearing a different hat.
+
+`[OPEN]` Atrium does not make model calls (§8), so `plan` cannot generate the proposal itself. Either it shells out to an operator-configured command the way the runner does, or it emits a prompt for an agent already in the room to answer through MCP. The second keeps the no-model-calls property intact and is preferred, but it is slower to demo. Decide before building.
+
+### 12.3 `expectedOutput` on tasks `[PLANNED]`
+
+CrewAI tasks declare an `expected_output` and validate against it with guardrails. Atrium's `acceptance` (§5) is the stronger mechanism — it is adversarial where a guardrail is self-checking — but it is currently thin on *what* is being checked: a reviewer gets a title and a description and has to infer the bar.
+
+Add an optional `expectedOutput` to `Task`: prose stating what a finished version looks like, optionally with a JSON schema for structured work. It is carried into the reviewer's prompt through MCP and available to a `command` acceptance as an environment variable.
+
+`[CONFIRMED]` This is a contract, not a gate. It does not accept anything on its own; it tells whoever *is* accepting what they are accepting against. Adding a self-validating guardrail path would reintroduce self-declared completion.
+
+### 12.4 Event stream `[PLANNED]`
+
+The log is already a typed event stream; there is no way for anything outside Atrium to subscribe to it. `atrium tail --json` for a line-delimited stream on stdout, and an SSE endpoint on the HTTP server for anything else.
+
+This is the one place the §1 non-goal ("not an observability product") needs a stated boundary: Atrium emits the stream and charts nothing. Making the log consumable by a tool that *does* chart is the opposite of building that tool.
+
+### 12.5 `manager` role `[PLANNED]`
+
+CrewAI's hierarchical process has a manager agent that delegates and reviews. The mechanics already exist here — roles in §3.2, acceptance in §5 — but there is no member type whose job is fanning work out.
+
+Add `manager` to the roles in §3.2: may create tasks, and is the default reviewer for tasks that name none.
+
+`[ASSUMPTION]` A manager is a member like any other, not a scheduler and not a control loop. It has no privileged view of the board and cannot accept its own submissions — the rule in §5 has no exceptions and this role does not become the first one. If rooms turn out to thrash without a real scheduler (§11), that is a separate decision to make deliberately, not something to let this role quietly become.

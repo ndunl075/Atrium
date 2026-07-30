@@ -26,6 +26,8 @@ import {
   InvalidError,
   Room,
   applyConfigChange,
+  applyJob,
+  parseJob,
   costSummary,
   createTask,
   currentLease,
@@ -69,6 +71,7 @@ import type {
   Acceptance,
   EventType,
   HistoryOptions,
+  Job,
   Member,
   MemberId,
   MemberRole,
@@ -201,19 +204,28 @@ function parseLimit(
 // init
 // ---------------------------------------------------------------------------
 
-const INIT_HELP = `Usage: atrium init [dir]
+const INIT_HELP = `Usage: atrium init [dir] [--from <job.yaml>]
 
 Creates a room in dir (default: the current directory). Refuses to run
 twice on the same directory — a room is created once, then joined.
 
+With --from, the room is seeded from a job file: the brief becomes
+CONTEXT.md, and every task in it goes on the board with its dependencies
+and acceptance rules already set. The file is read once, here. After this
+the log is the truth, so editing it later changes nothing.
+
 Options:
-  --help, -h   show this help
+  --from <file>   seed the room from a job file (YAML)
+  --help, -h      show this help
 `;
 
 export function cmdInit(argv: string[], sink: Sink): number {
   const { values, positionals } = parseArgs({
     args: argv,
-    options: { help: { type: "boolean", short: "h" } },
+    options: {
+      help: { type: "boolean", short: "h" },
+      from: { type: "string" },
+    },
     allowPositionals: true,
   });
   if (values.help) {
@@ -222,10 +234,53 @@ export function cmdInit(argv: string[], sink: Sink): number {
   }
 
   const dir = positionals[0] ?? process.cwd();
-  const room = Room.create(dir);
+
+  // The job file is read and fully validated before the room is created, so a
+  // file with a typo in it leaves no half-built room behind for the next run
+  // of `atrium init` to refuse.
+  let job: Job | undefined;
+  if (values.from !== undefined) {
+    const path = resolve(values.from);
+    let text: string;
+    try {
+      text = readFileSync(path, "utf8");
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      throw new InvalidError(
+        code === "ENOENT"
+          ? `No job file at ${path}.`
+          : `Could not read the job file at ${path}: ${(err as Error).message}`,
+      );
+    }
+    job = parseJob(text, path);
+  }
+
+  const room = Room.create(dir, job?.name !== undefined ? { name: job.name } : {});
   try {
     sink.out(`Created room "${room.config.name}" in ${room.dir}`);
-    sink.out(`Write ${room.paths.context} before anyone joins — it's the first thing every agent reads.`);
+
+    if (job === undefined) {
+      sink.out(
+        `Write ${room.paths.context} before anyone joins — it's the first thing every agent reads.`,
+      );
+      return 0;
+    }
+
+    const applied = applyJob(room, ensureCliHuman(room), job);
+    for (const task of job.tasks) {
+      const id = applied.taskIds.get(task.key)!;
+      const dependsOn =
+        task.dependsOn.length > 0 ? `  (after ${task.dependsOn.join(", ")})` : "";
+      sink.out(`  ${id}  ${task.title}${dependsOn}`);
+    }
+    sink.out(
+      `Seeded ${job.tasks.length} ${job.tasks.length === 1 ? "task" : "tasks"} from ${values.from}.`,
+    );
+    sink.out(
+      applied.wroteContext
+        ? `Wrote the brief to ${room.paths.context}.`
+        : `That job carried no brief — write ${room.paths.context} before anyone joins.`,
+    );
     return 0;
   } finally {
     room.close();

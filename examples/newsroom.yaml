@@ -1,0 +1,53 @@
+# A worked job file. Seed a room from it with:
+#
+#   node dist/cli.js init ./newsroom --from examples/newsroom.yaml
+#
+# The file is read once, right there. After that the room's event log is the
+# truth, the same as for a board built by hand — editing this file later
+# changes nothing about a room already created from it.
+
+name: newsroom
+
+# Becomes CONTEXT.md, the first thing every agent that joins reads.
+context: |-
+  # Newsroom
+
+  Cover the Henley/Barrow merger for Friday's edition.
+
+  - 800 words, house style, no subheadings.
+  - Every factual claim needs a source an editor can open.
+  - Nobody signs off their own work. If you wrote the draft, you are not
+    the one who accepts the fact-check.
+
+tasks:
+  research:
+    title: Gather sources on the merger
+    description: |-
+      At least four independent sources, each with a working link. Put them in
+      sources.md, one per line, with a sentence on what each one supports.
+    acceptance: reviewer
+
+  draft:
+    title: Write the 800-word piece
+    description: |-
+      Write draft.md from sources.md. Do not introduce a claim that sources.md
+      does not already support — if you need one, put the task back and say so.
+    dependsOn: [research]
+    acceptance: reviewer
+
+  factcheck:
+    title: Verify every claim in the draft
+    description: |-
+      Read draft.md against sources.md. Reject with the specific sentence that
+      is not supported, not a general note about accuracy.
+    dependsOn: [draft]
+    # A different member has to sign this off. Whoever submitted the draft
+    # cannot be the one who accepts it — the room refuses that outright.
+    acceptance: reviewer
+
+  linkcheck:
+    title: Check that every link still resolves
+    # The strongest kind of acceptance: an exit code decides, not an opinion.
+    # Swap this for whatever your room can actually run.
+    dependsOn: [factcheck]
+    acceptance: { kind: command, command: "node scripts/check-links.mjs", timeoutSeconds: 120 }

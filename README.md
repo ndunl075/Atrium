@@ -133,6 +133,50 @@ node dist/cli.js watch ./newsroom
 The Watch UI displays the brief, board, artifacts, activity history, and a live
 agent floor that reflects member and task states.
 
+## Declare a job in one file
+
+Building a board one `task add` at a time is fine for a task or two. To set up
+a whole job at once, describe it in a job file and seed the room from that:
+
+```yaml
+# job.yaml
+name: newsroom
+context: |-
+  Cover the Henley/Barrow merger for Friday's edition. 800 words, house style.
+tasks:
+  research:
+    title: Gather sources on the merger
+    description: At least four independent sources, each with a working link.
+    acceptance: reviewer
+  draft:
+    title: Write the 800-word piece
+    dependsOn: [research]
+    acceptance: reviewer
+  factcheck:
+    title: Verify every claim in the draft
+    dependsOn: [draft]
+    acceptance: { kind: command, command: "npm run lint:links", timeoutSeconds: 120 }
+```
+
+```sh
+node dist/cli.js init ./newsroom --from job.yaml
+```
+
+That writes `CONTEXT.md`, creates every task, wires up the dependency graph,
+and sets each task's acceptance rule. `examples/newsroom.yaml` is a complete
+worked file to start from.
+
+Task names in the file are local labels used by `dependsOn`; Atrium resolves
+them to task ids as it creates them, so tasks can be listed in any order.
+`acceptance` takes either a bare kind (`reviewer`, `human`, `none`) or a
+mapping — `command` needs the full form because it needs a command to run.
+
+The file is read once, at `init`. After that the room's event log is the
+truth, so editing the file later does not change a room already created from
+it. Unknown keys are rejected rather than ignored, and the whole file is
+validated before the room is created, so a typo leaves nothing half-built
+behind.
+
 ## Connect an MCP client
 
 ### Local stdio transport
@@ -315,8 +359,11 @@ Members or adapters must report their usage. A process that does not report
 costs cannot be included in Atrium's totals.
 
 Distributed rooms, semantic retrieval, and enforced model-level cost metering
-are not currently implemented. See [ARCHITECTURE.md](./ARCHITECTURE.md) for
-design details and open decisions.
+are not currently implemented.
+
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for design details and open
+decisions — section 0 lists what is built versus planned, and section 12
+covers what is being built next.
 
 ## License
 

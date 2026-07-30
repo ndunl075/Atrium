@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Room } from "./room.js";
-import { claimTask, createTask } from "./board.js";
+import { claimTask, createTask, listTasks } from "./board.js";
 import { reviewTask, submitTask } from "./acceptance.js";
 import { acquireLease, currentLease } from "./leases.js";
 import { deleteArtifact, writeArtifact } from "./artifacts.js";
@@ -126,6 +126,137 @@ describe("init", () => {
 
     expect(code).not.toBe(0);
     expect(s.errLines.join("\n")).toMatch(/already a room/);
+  });
+
+  describe("--from a job file", () => {
+    const JOB = [
+      "name: newsroom",
+      "context: |-",
+      "  Cover the merger. 800 words.",
+      "tasks:",
+      "  research:",
+      "    title: Gather sources",
+      "  draft:",
+      "    title: Write the piece",
+      "    dependsOn: [research]",
+      '    acceptance: { kind: command, command: "npm test" }',
+    ].join("\n");
+
+    /** Writes a job file next to (not inside) the room being created. */
+    function jobFile(dir: string, contents: string): string {
+      const path = join(dir, "job.yaml");
+      writeFileSync(path, contents, "utf8");
+      return path;
+    }
+
+    it("seeds the board, the brief, and the room name from the file", () => {
+      const dir = tempDir();
+      const roomDir = join(dir, "room");
+      const s = sink();
+
+      const code = cmdInit([roomDir, "--from", jobFile(dir, JOB)], s);
+
+      expect(code).toBe(0);
+      const room = Room.open(roomDir);
+      try {
+        expect(room.config.name).toBe("newsroom");
+        expect(readFileSync(room.paths.context, "utf8")).toBe("Cover the merger. 800 words.\n");
+
+        const tasks = listTasks(room);
+        expect(tasks.map((t) => t.title)).toEqual(["Gather sources", "Write the piece"]);
+        expect(tasks[1]!.dependsOn).toEqual([tasks[0]!.id]);
+        expect(tasks[1]!.acceptance).toEqual({ kind: "command", command: "npm test" });
+      } finally {
+        room.close();
+      }
+    });
+
+    it("prints each task it created with its id", () => {
+      const dir = tempDir();
+      const roomDir = join(dir, "room");
+      const s = sink();
+
+      cmdInit([roomDir, "--from", jobFile(dir, JOB)], s);
+
+      const out = s.outLines.join("\n");
+      expect(out).toContain("Gather sources");
+      expect(out).toContain("Write the piece  (after research)");
+      expect(out).toMatch(/Seeded 2 tasks from/);
+      expect(out).toMatch(/Wrote the brief to/);
+    });
+
+    it("says so when the job carried no brief, rather than claiming it wrote one", () => {
+      const dir = tempDir();
+      const roomDir = join(dir, "room");
+      const s = sink();
+
+      cmdInit(
+        [roomDir, "--from", jobFile(dir, ["tasks:", "  a:", "    title: A"].join("\n"))],
+        s,
+      );
+
+      expect(s.outLines.join("\n")).toMatch(/carried no brief/);
+    });
+
+    it("keeps the directory name when the job file does not name the room", () => {
+      const dir = tempDir();
+      const roomDir = join(dir, "unnamed");
+
+      cmdInit(
+        [roomDir, "--from", jobFile(dir, ["tasks:", "  a:", "    title: A"].join("\n"))],
+        sink(),
+      );
+
+      const room = Room.open(roomDir);
+      try {
+        expect(room.config.name).toBe("unnamed");
+      } finally {
+        room.close();
+      }
+    });
+
+    it("leaves no room behind when the job file is bad", () => {
+      const dir = tempDir();
+      const roomDir = join(dir, "room");
+      const path = jobFile(dir, ["tasks:", "  a:", "    titel: A"].join("\n"));
+
+      const s = sink();
+      const code = runCli(["init", roomDir, "--from", path], s);
+
+      expect(code).not.toBe(0);
+      expect(s.errLines.join("\n")).toMatch(/did you mean "title"\?/);
+      // The whole point of validating before creating: the next attempt must
+      // not hit "already a room".
+      expect(Room.isRoom(roomDir)).toBe(false);
+    });
+
+    it("reports a missing job file by path", () => {
+      const dir = tempDir();
+      const missing = join(dir, "nope.yaml");
+
+      const s = sink();
+      const code = runCli(["init", join(dir, "room"), "--from", missing], s);
+
+      expect(code).not.toBe(0);
+      expect(s.errLines.join("\n")).toContain("No job file at");
+    });
+
+    it("names the job file and line when the YAML itself is malformed", () => {
+      const dir = tempDir();
+      const path = jobFile(dir, ["tasks:", "  a:", "    title: A", "\tbad: 1"].join("\n"));
+
+      const s = sink();
+      const code = runCli(["init", join(dir, "room"), "--from", path], s);
+
+      expect(code).not.toBe(0);
+      expect(s.errLines.join("\n")).toMatch(/job\.yaml, line 4: indented with a tab/);
+    });
+
+    it("mentions --from in its help", () => {
+      const s = sink();
+      expect(cmdInit(["--help"], s)).toBe(0);
+      expect(s.outLines.join("\n")).toContain("--from");
+    });
   });
 });
 

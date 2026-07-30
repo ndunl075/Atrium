@@ -163,6 +163,14 @@ export {
   type VerifySummary,
   type VerifyReport,
 } from "./verify.js";
+export { parseYaml, type YamlValue, type YamlParseOptions } from "./yaml.js";
+export {
+  parseJob,
+  applyJob,
+  type Job,
+  type JobTask,
+  type AppliedJob,
+} from "./jobs.js";
 export {
   parseRunnerConfig,
   loadRunnerConfig,
