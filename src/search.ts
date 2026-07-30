@@ -19,7 +19,7 @@ import { join } from "node:path";
 
 import { type Db, openDb } from "./db.js";
 import { InvalidError } from "./errors.js";
-import { toArtifactPath } from "./paths.js";
+import { resolveArtifact, toArtifactPath } from "./paths.js";
 import type { Room } from "./room.js";
 
 export interface SearchHit {
@@ -34,6 +34,8 @@ export interface SearchHit {
 export interface SearchOptions {
   limit?: number;
   maxBytes?: number;
+  /** Limit matches to this artifact path, or to files beneath it. */
+  pathPrefix?: string;
 }
 
 export interface IndexOptions {
@@ -64,6 +66,14 @@ export function searchArtifacts(
     throw new InvalidError("limit must be a whole number, zero or more.");
   }
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
+  validateMaxBytes(maxBytes);
+  const pathPrefix =
+    options.pathPrefix === undefined
+      ? undefined
+      : toArtifactPath(
+          room.dir,
+          resolveArtifact(room.dir, options.pathPrefix),
+        );
 
   // Extracting only word-ish tokens, rather than trying to escape whatever the
   // caller sent, is what makes this safe against arbitrary input. Queries come
@@ -80,15 +90,26 @@ export function searchArtifacts(
   try {
     if (files === 0) return [];
 
+    const pathClause =
+      pathPrefix === undefined
+        ? ""
+        : " AND (path = ? OR substr(path, 1, ?) = ?)";
+    const params: Array<string | number> = [matchQuery];
+    if (pathPrefix !== undefined) {
+      const subtree = `${pathPrefix}/`;
+      params.push(pathPrefix, subtree.length, subtree);
+    }
+    params.push(limit);
+
     const rows = db
       .prepare(
         `SELECT path, bytes, bm25(docs) as rank,
                 snippet(docs, 1, '', '', ' … ', 12) as excerpt
-         FROM docs WHERE docs MATCH ? ORDER BY bm25(docs) LIMIT ?`,
+         FROM docs WHERE docs MATCH ?${pathClause}
+         ORDER BY bm25(docs) LIMIT ?`,
       )
       .all<{ path: string; bytes: number; rank: number; excerpt: string }>(
-        matchQuery,
-        limit,
+        ...params,
       );
 
     return rows.map((row) => ({
@@ -109,6 +130,7 @@ export function searchArtifacts(
  */
 export function indexRoom(room: Room, options: IndexOptions = {}): IndexStats {
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
+  validateMaxBytes(maxBytes);
   const { db, files, skipped } = buildIndex(room, maxBytes);
   db.close();
   return { files, skipped };
@@ -167,6 +189,12 @@ function looksBinary(buf: Buffer): boolean {
     if (buf[i] === 0) return true;
   }
   return false;
+}
+
+function validateMaxBytes(maxBytes: number): void {
+  if (!Number.isInteger(maxBytes) || maxBytes < 0) {
+    throw new InvalidError("maxBytes must be a whole number, zero or more.");
+  }
 }
 
 /** A run of letters or digits, allowing internal `-`/`_`/`'` (e.g. "test-case"). */
