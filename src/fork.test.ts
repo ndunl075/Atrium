@@ -294,18 +294,41 @@ describe("forkRoom", () => {
     expect(() => fork.authenticate(joined.token)).toThrow();
   });
 
-  it("copies the brief as it is now, and says that is what it did", () => {
+  it("rewinds the brief to what it said at the fork point", () => {
     const base = workspace();
     const room = track(Room.create(join(base, "parent")));
-    member(room, "scout", "worker");
+
+    writeFileSync(room.paths.context, "# The original brief\n", "utf8");
+    member(room, "scout", "worker"); // joining captures the brief
     const early = room.log.head();
 
-    // Editing CONTEXT.md records nothing, which is the point of the warning.
+    // Edited afterwards, and captured by the next join.
     writeFileSync(room.paths.context, "# Rewritten later\n", "utf8");
+    member(room, "editor", "reviewer");
 
     const result = forkRoom(room, join(base, "variant"), { at: early });
-    expect(result.contextCopied).toBe(true);
-    expect(readFileSync(join(result.dir, "CONTEXT.md"), "utf8")).toBe("# Rewritten later\n");
+
+    expect(result.context).toEqual({ copied: true, rewound: true });
+    // The instruction every decision in the copied history was made against,
+    // not the one that replaced it.
+    expect(readFileSync(join(result.dir, "CONTEXT.md"), "utf8")).toBe("# The original brief\n");
+    expect(readFileSync(room.paths.context, "utf8")).toBe("# Rewritten later\n");
+  });
+
+  it("falls back to the current brief when none was ever recorded, and says so", () => {
+    const base = workspace();
+    const room = track(Room.create(join(base, "parent")));
+    // No join, so nothing captured the brief.
+    writeFileSync(room.paths.context, "# Never recorded\n", "utf8");
+
+    const result = forkRoom(room, join(base, "variant"));
+
+    expect(result.context).toEqual({
+      copied: true,
+      rewound: false,
+      reason: "never-recorded",
+    });
+    expect(readFileSync(join(result.dir, "CONTEXT.md"), "utf8")).toBe("# Never recorded\n");
   });
 
   it("starts halted when the parent had already halted by that point", () => {
@@ -397,8 +420,8 @@ describe("atrium fork", () => {
     expect(code).toBe(0);
     const out = s.outLines.join("\n");
     expect(out).toMatch(/Forked "parent" at event/);
-    // The two things a reader has to know before trusting a fork.
-    expect(out).toMatch(/the log does not record what it said at that point/);
+    expect(out).toMatch(/The brief was rewound to what it said at that point/);
+    // The thing a reader has to know before trying to use the fork.
     expect(out).toMatch(/session tokens are not copied/);
   });
 
@@ -422,7 +445,6 @@ describe("atrium fork", () => {
     expect(cmdFork(["--help"], s)).toBe(0);
     const help = s.outLines.join("\n");
     expect(help).toMatch(/reproduces the room, not the world/);
-    expect(help).toMatch(/cannot rewind the brief/);
     expect(help).toMatch(/cannot bring back pruned content/);
   });
 

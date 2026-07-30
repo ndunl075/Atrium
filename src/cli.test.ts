@@ -684,15 +684,16 @@ describe("context", () => {
   it("says a file was not pinned rather than silently succeeding on --unpin", () => {
     const { dir, room } = tempRoom();
     // ensureCliHuman provisions the "cli" member on its first touch of the
-    // room, so the log gains that one event; what matters here is that no
-    // context.unpinned event follows it.
+    // room, and that join also captures the brief into the log for the first
+    // time, so two events. What matters here is that no context.unpinned
+    // event follows them.
     const before = room.log.head();
     const s = sink();
     const code = cmdContext(["--unpin", "never-pinned.md", dir], s);
 
     expect(code).toBe(0);
     expect(s.outLines.join("\n")).toMatch(/was not pinned/);
-    expect(room.log.head()).toBe(before + 1); // the "cli" member joining, nothing else
+    expect(room.log.head()).toBe(before + 2); // the join and the brief, nothing else
   });
 
   it("refuses --pin and --unpin together", () => {

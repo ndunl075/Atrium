@@ -73,6 +73,7 @@ import { existsSync, readFileSync } from "node:fs";
 
 import { DEFAULT_ROOM_CONFIG, type AnyEvent } from "./types.js";
 import { settingKeys } from "./config.js";
+import { briefDrift } from "./context.js";
 import { gcBlobs, loadBlob, type GcResult } from "./snapshots.js";
 import type { Room } from "./room.js";
 import { sha256 } from "./util.js";
@@ -262,6 +263,45 @@ function checkReclaimable(room: Room, findings: VerifyFinding[]): GcResult {
 }
 
 /**
+ * Whether the brief on disk is the one the log last recorded.
+ *
+ * Drift here is ordinary, not damage: `CONTEXT.md` is deliberately a plain
+ * file anybody can edit without going through Atrium (§4), and an edit is
+ * captured the next time somebody joins. So this is `info` — a room that has
+ * been edited and not yet joined is working exactly as designed.
+ *
+ * It is still worth reporting, because for the stretch between the edit and
+ * the next join the room's most important input is not in its own history,
+ * and nothing else would ever say so.
+ */
+function checkBriefRecorded(room: Room, findings: VerifyFinding[]): void {
+  const drift = briefDrift(room);
+  if (!drift.drifted) return;
+
+  // A room nobody has joined has not handed its brief to anybody, so there is
+  // no decision the log is failing to explain — and the file at that point is
+  // usually still the placeholder `Room.create` wrote. Joining records it, so
+  // reporting this on a brand-new room would be nagging about a gap that
+  // closes itself the moment it starts to matter.
+  const used = room.log.read({ types: ["member.joined"], limit: 1 }).length > 0;
+  if (!used) return;
+
+  findings.push({
+    severity: "info",
+    check: "brief-unrecorded",
+    message:
+      drift.recordedHash === undefined
+        ? "CONTEXT.md has never been recorded in the log, so no replay or fork can " +
+          'recover what it said. Run "atrium context --record" to record it now; joining ' +
+          "the room will also capture it."
+        : "CONTEXT.md on disk does not match the version the log last recorded, so a " +
+          "replay or fork would not show what it currently says. The next join captures " +
+          'it; "atrium context --record" does so now.',
+    path: "CONTEXT.md",
+  });
+}
+
+/**
  * `room.json` parsed independently of `Room.open`, which layers stored config
  * over `DEFAULT_ROOM_CONFIG` and so would happily hand back a `RoomConfig`
  * whose `leaseSeconds` is the string `"300"` without anyone noticing. A field
@@ -399,6 +439,7 @@ export function verifyRoom(room: Room): VerifyReport {
   const { artifactWrites, blobsChecked } = checkArtifacts(room, events, prunedSeqs, findings);
   const gc = checkReclaimable(room, findings);
   checkRoomConfig(room, findings);
+  checkBriefRecorded(room, findings);
   checkTokens(room, findings);
 
   return {

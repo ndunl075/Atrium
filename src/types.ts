@@ -250,6 +250,37 @@ export interface EventMap {
   "context.pinned": { path: string; memberId: MemberId };
   "context.unpinned": { path: string; memberId: MemberId };
 
+  /**
+   * What the room's brief said, recorded so the log stops being silent about
+   * the one input every agent reads.
+   *
+   * ARCHITECTURE.md §3.5 calls the log the single source of truth, and until
+   * this existed that was false in exactly one place: pinning was an event,
+   * but editing `CONTEXT.md` was a plain file write nothing recorded. The log
+   * held every consequence of the instruction and not the instruction, so no
+   * replay could recover what an agent was actually told.
+   *
+   * The bytes go in the same content-addressed store artifacts use, keyed by
+   * this hash, which is what lets `atrium context --at` and a fork read a past
+   * brief back rather than only knowing that it changed.
+   */
+  "context.written": {
+    hash: string;
+    bytes: number;
+    /**
+     * Where the bytes came from, which is not the same question as who the
+     * actor is. `atrium` means Atrium itself wrote them — seeding a room from
+     * a job file, say — so the actor authored this content. `observed` means
+     * Atrium read them off disk: the file had already changed, and this is a
+     * room noticing rather than a member writing.
+     *
+     * The brief is deliberately still a file anybody can edit in any editor
+     * (§4), so this distinction is the honest one. A room must not claim
+     * somebody authored a change it merely found.
+     */
+    source: "atrium" | "observed";
+  };
+
   "note.posted": { memberId: MemberId; text: string; taskId?: TaskId };
 
   "room.halted": { reason: string };
@@ -327,6 +358,7 @@ const EVENT_TYPE_REGISTRY: Record<EventType, true> = {
   "lease.renewed": true,
   "lease.released": true,
   "context.pinned": true,
+  "context.written": true,
   "context.unpinned": true,
   "note.posted": true,
   "room.halted": true,

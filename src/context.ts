@@ -13,8 +13,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { InvalidError, NotFoundError } from "./errors.js";
 import { resolveArtifact, toArtifactPath } from "./paths.js";
 import type { Room } from "./room.js";
+import { loadBlob, storeBlob } from "./snapshots.js";
 import type { AnyEvent, EventType, MemberId, TaskId } from "./types.js";
-import { estimateTokens } from "./util.js";
+import { estimateTokens, sha256 } from "./util.js";
 
 export interface PinnedArtifact {
   path: string;
@@ -217,6 +218,178 @@ export function listPinned(room: Room): string[] {
   return [...pinned.keys()];
 }
 
+// ---------------------------------------------------------------------------
+// Recording the brief
+//
+// ARCHITECTURE.md §3.5 claims the log is the single source of truth, and until
+// `context.written` existed that was false in one place: pinning was an event,
+// editing CONTEXT.md was not. The log held every consequence of the
+// instruction and never the instruction itself.
+//
+// The awkward part is that the brief must stay a plain file somebody can edit
+// in any editor — §4 is built on that, and the README tells people to do it.
+// So this cannot be a write path the way artifacts are. It is a *capture*:
+// hash what is on disk, compare it to the last hash recorded, and append an
+// event only when they differ. Nothing is forced through Atrium, and nothing
+// is lost either.
+// ---------------------------------------------------------------------------
+
+/** What the brief looked like at some point, or why it cannot be read back. */
+export type BriefVersion =
+  | { state: "present"; text: string; hash: string; seq: number }
+  /** Nothing recorded at or before that point. */
+  | { state: "absent" }
+  /** Recorded, but its bytes are gone from the object store. */
+  | { state: "pruned"; hash: string; bytes: number; seq: number };
+
+export interface RecordBriefResult {
+  /** False when the brief was already recorded at this exact content. */
+  recorded: boolean;
+  hash: string;
+  bytes: number;
+}
+
+/** The brief as it is on disk right now, and its hash. Empty if there is none. */
+function briefOnDisk(room: Room): { text: string; hash: string; bytes: number } {
+  const text = existsSync(room.paths.context)
+    ? readFileSync(room.paths.context, "utf8")
+    : "";
+  const bytes = Buffer.from(text, "utf8");
+  return { text, hash: sha256(bytes), bytes: bytes.length };
+}
+
+/** The most recent `context.written` at or before `seq`, if there is one. */
+function lastRecorded(
+  room: Room,
+  seq?: number,
+): { hash: string; bytes: number; seq: number } | undefined {
+  // The `types` filter runs in SQL, but the returned rows are still typed as
+  // the whole event union — narrowing has to happen here for the payload to
+  // be readable.
+  const last = room.log
+    .read({
+      types: ["context.written"],
+      ...(seq !== undefined ? { to: seq } : {}),
+      order: "desc",
+      limit: 1,
+    })
+    .find((event) => event.type === "context.written");
+
+  return last === undefined
+    ? undefined
+    : { hash: last.data.hash, bytes: last.data.bytes, seq: last.seq };
+}
+
+/**
+ * Records what the brief currently says, if that is not already recorded.
+ *
+ * Returns `recorded: false` when the content is unchanged, and appends
+ * nothing — this is called on every join, and a room where the brief never
+ * changes should not grow an event per member for it. Every event costs
+ * budget (see `Room.assertUsable`), so "only when it actually changed" is a
+ * correctness property here, not an optimisation.
+ *
+ * `source` is the honest half of this. `atrium` means the caller wrote the
+ * brief through Atrium and the actor authored it; `observed` means the file
+ * changed underneath and this is a room noticing, which is not the same claim
+ * and must not be recorded as though it were.
+ */
+export function recordBrief(
+  room: Room,
+  actor: MemberId | "system",
+  source: "atrium" | "observed" = "atrium",
+): RecordBriefResult {
+  const { text, hash, bytes } = briefOnDisk(room);
+  const previous = lastRecorded(room);
+
+  if (previous?.hash === hash) return { recorded: false, hash, bytes };
+
+  // An empty brief that has never been recorded is not worth an event: a room
+  // whose CONTEXT.md is missing or blank has nothing to say, and recording
+  // that on every fresh room would put a meaningless version at the head of
+  // every history.
+  if (previous === undefined && bytes === 0) return { recorded: false, hash, bytes };
+
+  storeBlob(room, hash, Buffer.from(text, "utf8"));
+  room.log.append(actor, "context.written", { hash, bytes, source });
+  return { recorded: true, hash, bytes };
+}
+
+/**
+ * The brief as it stood right after log position `seq`.
+ *
+ * The same "as of this point in the log" model `atrium replay` uses, applied
+ * to the one input that decides what every agent does.
+ */
+export function briefAt(room: Room, seq: number): BriefVersion {
+  const recorded = lastRecorded(room, seq);
+  if (recorded === undefined) return { state: "absent" };
+
+  const bytes = loadBlob(room, recorded.hash);
+  if (bytes === undefined) {
+    return { state: "pruned", hash: recorded.hash, bytes: recorded.bytes, seq: recorded.seq };
+  }
+  return {
+    state: "present",
+    text: bytes.toString("utf8"),
+    hash: recorded.hash,
+    seq: recorded.seq,
+  };
+}
+
+export interface BriefVersionInfo {
+  seq: number;
+  ts: string;
+  actor: MemberId | "system";
+  hash: string;
+  bytes: number;
+  source: "atrium" | "observed";
+  /** False once a retention sweep has taken the content. */
+  readable: boolean;
+}
+
+/** Every recorded version of the brief, oldest first. */
+export function briefHistory(room: Room): BriefVersionInfo[] {
+  return room.log
+    .read({ types: ["context.written"] })
+    .filter((event) => event.type === "context.written")
+    .map((event) => ({
+      seq: event.seq,
+      ts: event.ts,
+      actor: event.actor,
+      hash: event.data.hash,
+      bytes: event.data.bytes,
+      source: event.data.source,
+      readable: loadBlob(room, event.data.hash) !== undefined,
+    }));
+}
+
+export interface BriefDrift {
+  /** True when what is on disk is not what the log last recorded. */
+  drifted: boolean;
+  diskHash: string;
+  recordedHash?: string;
+}
+
+/**
+ * Whether the brief on disk matches the last version recorded.
+ *
+ * Drift is normal and expected — somebody edited CONTEXT.md and nobody has
+ * joined since — so this is not an error anywhere. It is what lets
+ * `atrium verify` say so out loud instead of leaving a room quietly
+ * disagreeing with its own log.
+ */
+export function briefDrift(room: Room): BriefDrift {
+  const { hash, bytes } = briefOnDisk(room);
+  const recorded = lastRecorded(room);
+
+  // A room with no brief and nothing recorded has not drifted; it is empty.
+  if (recorded === undefined) {
+    return { drifted: bytes > 0, diskHash: hash };
+  }
+  return { drifted: recorded.hash !== hash, diskHash: hash, recordedHash: recorded.hash };
+}
+
 /**
  * Tier 3: the log rendered as sentences, so an agent joining mid-run can read
  * what happened instead of needing somebody to summarize it for them.
@@ -368,6 +541,13 @@ function describeEvent(
 
     case "context.unpinned":
       return `${actorName(event.data.memberId)} unpinned ${event.data.path} from the room context.`;
+
+    case "context.written":
+      // "changed" rather than "wrote" for an observed capture, because nobody
+      // in the room did it — the file changed and the room noticed.
+      return event.data.source === "observed"
+        ? `The brief changed on disk (${event.data.bytes} bytes), recorded when it was next read.`
+        : `${actorName(event.actor)} wrote the room's brief (${event.data.bytes} bytes).`;
 
     case "note.posted":
       return event.data.taskId

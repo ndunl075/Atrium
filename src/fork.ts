@@ -25,12 +25,14 @@
  * whose forks are only partly true. The CLI says so out loud rather than
  * leaving somebody to work it out after trusting one.
  *
- * **It cannot rewind the brief.** `CONTEXT.md` is the one part of a room that
- * is not in the log: `context.pinned` and `context.unpinned` are events, but
- * editing the brief itself is a plain file write that nothing records. So a
- * fork copies the brief *as it is now*, not as it was at the fork point, and
- * says which it did. This is a genuine hole in the §3.5 claim rather than a
- * limitation of forking, and forking is just the first thing to trip over it.
+ * **The brief comes back too, now.** This originally could not rewind
+ * `CONTEXT.md`, because editing the brief was a plain file write that nothing
+ * recorded — a genuine hole in the §3.5 claim that forking was simply the
+ * first feature to trip over. `context.written` closed it, so a fork gets the
+ * brief the parent had at the fork point: the instruction every decision in
+ * the copied history was made against. Two cases still fall back to the
+ * parent's current brief and say so — a room whose brief predates that event
+ * existing, and one whose recorded bytes a retention sweep has taken.
  *
  * **A pruned version cannot come back.** If a retention sweep dropped the
  * bytes of a version the fork needs, the fork has no way to recreate them.
@@ -58,6 +60,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { listArtifacts, listDeletedArtifacts } from "./artifacts.js";
+import { briefAt } from "./context.js";
 import { InvalidError } from "./errors.js";
 import { EventLog } from "./log.js";
 import { roomPaths } from "./paths.js";
@@ -102,8 +105,8 @@ export interface ForkResult extends ForkPlan {
   dir: string;
   name: string;
   roomId: string;
-  /** Whether a brief was copied — see the note about CONTEXT.md above. */
-  contextCopied: boolean;
+  /** What happened to the brief, and whether it could be rewound. */
+  context: ContextOutcome;
 }
 
 /**
@@ -227,9 +230,9 @@ export function forkRoom(source: Room, targetDir: string, options: ForkOptions =
   try {
     copyBlobs(source, fork, atSeq);
     materialize(source, fork, atSeq, plan);
-    const contextCopied = copyContext(source, fork);
+    const context = copyContext(source, fork, atSeq);
 
-    return { ...plan, dir: fork.dir, name, roomId: config.id, contextCopied };
+    return { ...plan, dir: fork.dir, name, roomId: config.id, context };
   } finally {
     fork.close();
   }
@@ -293,16 +296,43 @@ function materialize(source: Room, fork: Room, atSeq: number, plan: ForkPlan): v
 }
 
 /**
- * Copies the brief across, and reports whether there was one.
+ * Writes the fork's brief: the one the parent had at the fork point.
  *
- * This copies the *current* `CONTEXT.md`, not the brief as it stood at the
- * fork point, because nothing records what it said then. See this module's
- * doc comment: the gap is in the log, not here.
+ * This used to copy the current `CONTEXT.md` regardless, because nothing
+ * recorded what the brief said at any earlier point. `context.written` fixed
+ * that, so a fork now rewinds the brief along with everything else — which
+ * matters more here than almost anywhere, since the brief is the instruction
+ * every decision in the copied history was made against.
+ *
+ * Two cases still fall back to the parent's current brief, and both say so:
+ * a room whose brief was never recorded (written before this existed), and a
+ * recorded version whose bytes a retention sweep has taken.
  */
-function copyContext(source: Room, fork: Room): boolean {
-  if (!existsSync(source.paths.context)) return false;
+function copyContext(source: Room, fork: Room, atSeq: number): ContextOutcome {
+  const recorded = briefAt(source, atSeq);
+
+  if (recorded.state === "present") {
+    writeFileSync(fork.paths.context, recorded.text, "utf8");
+    return { copied: true, rewound: true };
+  }
+
+  if (!existsSync(source.paths.context)) {
+    return { copied: false, rewound: false };
+  }
   writeFileSync(fork.paths.context, readFileSync(source.paths.context));
-  return true;
+  return {
+    copied: true,
+    rewound: false,
+    reason: recorded.state === "pruned" ? "pruned" : "never-recorded",
+  };
+}
+
+export interface ContextOutcome {
+  copied: boolean;
+  /** True when the fork got the brief as of the fork point, not the current one. */
+  rewound: boolean;
+  /** Why it could not be rewound, when it could not. */
+  reason?: "pruned" | "never-recorded";
 }
 
 function basenameOf(dir: string): string {

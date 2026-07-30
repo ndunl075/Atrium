@@ -164,8 +164,19 @@ export {
   type VerifyReport,
 } from "./verify.js";
 export {
+  recordBrief,
+  briefAt,
+  briefHistory,
+  briefDrift,
+  type BriefVersion,
+  type BriefVersionInfo,
+  type BriefDrift,
+  type RecordBriefResult,
+} from "./context.js";
+export {
   planFork,
   forkRoom,
+  type ContextOutcome,
   type ForkPlan,
   type ForkResult,
   type ForkOptions,

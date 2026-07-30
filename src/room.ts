@@ -13,6 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 
+import { recordBrief } from "./context.js";
 import { EventLog } from "./log.js";
 import {
   HaltedError,
@@ -140,6 +141,13 @@ export class Room {
     const log = EventLog.open(paths.db);
     log.append("system", "room.created", { roomId: config.id, name });
 
+    // Deliberately not recording the brief here. The file `Room.create`
+    // writes is a placeholder nobody has written yet, and recording it would
+    // put a meaningless first version at the head of every room's history
+    // while costing every room an event of its action budget. The first
+    // version worth having is whatever somebody replaces it with, and that is
+    // captured by `applyJob`, by `atrium context --record`, or by the next
+    // join — whichever happens first.
     return new Room(paths, log, config);
   }
 
@@ -176,6 +184,17 @@ export class Room {
 
   join(options: JoinOptions): JoinResult {
     this.assertUsable();
+
+    // The brief is a plain file anybody can edit without telling Atrium (§4),
+    // so this is where an edit made in somebody's editor gets into the log:
+    // right before a member is handed that brief to work from. Recording it
+    // at the moment it is about to be acted on is the honest point to do it,
+    // and it appends nothing when the brief has not changed.
+    //
+    // `join` rather than `getContext` on purpose. Reads must stay reads — the
+    // Watch UI calls getContext on a timer, and a read-only view that grew
+    // the log every few seconds would be its own kind of wrong.
+    recordBrief(this, "system", "observed");
 
     const name = options.name?.trim();
     if (!name) throw new InvalidError("A member needs a name.");

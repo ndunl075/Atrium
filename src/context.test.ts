@@ -4,12 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  briefAt,
+  briefDrift,
+  briefHistory,
   describeHistory,
   getContext,
   listPinned,
   pinArtifact,
+  recordBrief,
   unpinArtifact,
 } from "./context.js";
+import { cmdContext, type Sink } from "./cli.js";
 import { InvalidError, NotFoundError } from "./errors.js";
 import { Room } from "./room.js";
 
@@ -207,6 +212,253 @@ describe("pinning", () => {
     expect(listPinned(room)).toEqual(["notes.md"]);
     // ...but does not appear, or blow up, when reading the actual context.
     expect(getContext(room).pinned).toEqual([]);
+  });
+});
+
+/**
+ * The brief is the one input every agent reads, and until `context.written`
+ * existed it was the one thing the log did not record — see ARCHITECTURE.md
+ * §3.5. These cover the awkward part of the fix: the brief has to stay a
+ * plain file anybody can edit without going through Atrium, so recording it
+ * is a capture rather than a write path.
+ */
+describe("recording the brief", () => {
+  function setBrief(room: Room, text: string): void {
+    writeFileSync(room.paths.context, text, "utf8");
+  }
+
+  it("records what the brief says and reads it back", () => {
+    const room = tempRoom();
+    setBrief(room, "# The job\n");
+
+    const recorded = recordBrief(room, "system");
+
+    expect(recorded.recorded).toBe(true);
+    expect(recorded.bytes).toBe(Buffer.byteLength("# The job\n"));
+    expect(briefAt(room, room.log.head())).toMatchObject({
+      state: "present",
+      text: "# The job\n",
+    });
+  });
+
+  it("appends nothing when the brief has not changed", () => {
+    const room = tempRoom();
+    setBrief(room, "# The job\n");
+    recordBrief(room, "system");
+    const after = room.log.head();
+
+    const again = recordBrief(room, "system");
+
+    expect(again.recorded).toBe(false);
+    // Every event costs budget, so a room whose brief never changes must not
+    // grow one per join.
+    expect(room.log.head()).toBe(after);
+  });
+
+  it("does not record an empty brief that was never recorded before", () => {
+    const room = tempRoom();
+    setBrief(room, "");
+
+    expect(recordBrief(room, "system").recorded).toBe(false);
+    expect(briefHistory(room)).toEqual([]);
+  });
+
+  it("records a brief that was emptied after having content", () => {
+    const room = tempRoom();
+    setBrief(room, "# Something\n");
+    recordBrief(room, "system");
+
+    setBrief(room, "");
+
+    // Emptying the brief is a real change, unlike a room that never had one.
+    expect(recordBrief(room, "system").recorded).toBe(true);
+    expect(briefAt(room, room.log.head())).toMatchObject({ state: "present", text: "" });
+  });
+
+  it("tells an authored write apart from one it merely noticed", () => {
+    const room = tempRoom();
+    setBrief(room, "# Written through atrium\n");
+    recordBrief(room, "system", "atrium");
+
+    setBrief(room, "# Edited in an editor\n");
+    recordBrief(room, "system", "observed");
+
+    expect(briefHistory(room).map((version) => version.source)).toEqual([
+      "atrium",
+      "observed",
+    ]);
+  });
+
+  it("captures an out-of-band edit when somebody joins", () => {
+    const room = tempRoom();
+    setBrief(room, "# Edited in an editor, with atrium none the wiser\n");
+
+    room.join({ name: "scout", role: "worker" });
+
+    expect(briefAt(room, room.log.head())).toMatchObject({
+      state: "present",
+      text: "# Edited in an editor, with atrium none the wiser\n",
+    });
+    expect(briefHistory(room)[0]!.source).toBe("observed");
+  });
+
+  it("captures the brief before the member who will read it has joined", () => {
+    const room = tempRoom();
+    setBrief(room, "# The brief\n");
+
+    room.join({ name: "scout", role: "worker" });
+
+    const versions = briefHistory(room);
+    const joins = room.log.read({ types: ["member.joined"] });
+    // Recorded first, so the log reads as "this is what was on the wall" then
+    // "and then somebody walked in and read it".
+    expect(versions[0]!.seq).toBeLessThan(joins[0]!.seq);
+  });
+
+  it("does not grow the log on later joins when nothing changed", () => {
+    const room = tempRoom();
+    setBrief(room, "# Stable\n");
+    room.join({ name: "a", role: "worker" });
+    const after = room.log.head();
+
+    room.join({ name: "b", role: "worker" });
+
+    expect(room.log.head()).toBe(after + 1); // just the join
+    expect(briefHistory(room)).toHaveLength(1);
+  });
+
+  describe("briefAt", () => {
+    it("reads the version in force at that point, not the newest", () => {
+      const room = tempRoom();
+      setBrief(room, "# First\n");
+      recordBrief(room, "system");
+      const early = room.log.head();
+
+      setBrief(room, "# Second\n");
+      recordBrief(room, "system");
+
+      expect(briefAt(room, early)).toMatchObject({ text: "# First\n" });
+      expect(briefAt(room, room.log.head())).toMatchObject({ text: "# Second\n" });
+    });
+
+    it("reports nothing recorded by that point as absent", () => {
+      const room = tempRoom();
+      const before = room.log.head();
+      setBrief(room, "# Later\n");
+      recordBrief(room, "system");
+
+      expect(briefAt(room, before)).toEqual({ state: "absent" });
+    });
+  });
+
+  describe("briefDrift", () => {
+    it("sees no drift right after recording", () => {
+      const room = tempRoom();
+      setBrief(room, "# Recorded\n");
+      recordBrief(room, "system");
+
+      expect(briefDrift(room).drifted).toBe(false);
+    });
+
+    it("sees drift once the file is edited and nobody has joined since", () => {
+      const room = tempRoom();
+      setBrief(room, "# Recorded\n");
+      recordBrief(room, "system");
+
+      setBrief(room, "# Edited since\n");
+
+      const drift = briefDrift(room);
+      expect(drift.drifted).toBe(true);
+      expect(drift.diskHash).not.toBe(drift.recordedHash);
+    });
+
+    it("does not call an empty, never-recorded brief drifted", () => {
+      const room = tempRoom();
+      writeFileSync(room.paths.context, "", "utf8");
+
+      expect(briefDrift(room).drifted).toBe(false);
+    });
+  });
+});
+
+describe("atrium context, recording flags", () => {
+  function sink(): Sink & { outLines: string[]; errLines: string[] } {
+    const outLines: string[] = [];
+    const errLines: string[] = [];
+    return {
+      outLines,
+      errLines,
+      out: (line) => outLines.push(line),
+      err: (line) => errLines.push(line),
+    };
+  }
+
+  it("--record captures the brief without waiting for somebody to join", () => {
+    const room = tempRoom();
+    writeFileSync(room.paths.context, "# Edited by hand\n", "utf8");
+    const s = sink();
+
+    expect(cmdContext(["--record", room.dir], s)).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/Recorded the brief/);
+    expect(briefAt(room, room.log.head())).toMatchObject({ text: "# Edited by hand\n" });
+  });
+
+  it("--record says so and changes nothing when already recorded", () => {
+    const room = tempRoom();
+    writeFileSync(room.paths.context, "# Already there\n", "utf8");
+    cmdContext(["--record", room.dir], sink());
+    const after = room.log.head();
+
+    const s = sink();
+    expect(cmdContext(["--record", room.dir], s)).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/already matches/);
+    expect(room.log.head()).toBe(after);
+  });
+
+  it("--history lists every recorded version and flags drift", () => {
+    const room = tempRoom();
+    writeFileSync(room.paths.context, "# One\n", "utf8");
+    cmdContext(["--record", room.dir], sink());
+    writeFileSync(room.paths.context, "# Two, unrecorded\n", "utf8");
+
+    const s = sink();
+    expect(cmdContext(["--history", room.dir], s)).toBe(0);
+    const out = s.outLines.join("\n");
+    // Recorded via --record, which reads the file rather than authoring it.
+    expect(out).toMatch(/changed on disk/);
+    expect(out).toMatch(/does not match the last recorded version/);
+  });
+
+  it("--at prints the brief as it stood then, not as it stands now", () => {
+    const room = tempRoom();
+    writeFileSync(room.paths.context, "# The original\n", "utf8");
+    cmdContext(["--record", room.dir], sink());
+    const early = room.log.head();
+    writeFileSync(room.paths.context, "# Replaced\n", "utf8");
+    cmdContext(["--record", room.dir], sink());
+
+    const s = sink();
+    expect(cmdContext(["--at", String(early), room.dir], s)).toBe(0);
+    expect(s.outLines.join("\n")).toContain("# The original");
+    expect(s.outLines.join("\n")).not.toContain("# Replaced");
+  });
+
+  it("--at says plainly when nothing had been recorded by then", () => {
+    const room = tempRoom();
+    const before = room.log.head();
+    writeFileSync(room.paths.context, "# Later\n", "utf8");
+    cmdContext(["--record", room.dir], sink());
+
+    const s = sink();
+    expect(cmdContext(["--at", String(before), room.dir], s)).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/No brief had been recorded by event/);
+  });
+
+  it("refuses an --at that is not an event number", () => {
+    const room = tempRoom();
+    const s = sink();
+    expect(cmdContext(["--at", "recently", room.dir], s)).toBe(2);
+    expect(s.errLines.join("\n")).toMatch(/--at must be a whole event number/);
   });
 });
 

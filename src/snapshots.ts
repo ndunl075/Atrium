@@ -109,9 +109,16 @@ export interface GcResult {
  * the next sweep rather than deleting a live one.
  */
 export function gcBlobs(room: Room, options: { dryRun?: boolean } = {}): GcResult {
+  // Both kinds of event that put bytes in the store. `context.written` is
+  // easy to forget here and expensive to forget: the brief's blob is the one
+  // object in the store that no artifact event mentions, so a sweep that
+  // only looked at `artifact.written` would delete every recorded version of
+  // the room's brief and call it reclaimed space.
   const referenced = new Set<string>();
-  for (const event of room.log.read({ types: ["artifact.written"] })) {
-    if (event.type === "artifact.written") referenced.add(event.data.hash);
+  for (const event of room.log.read({ types: ["artifact.written", "context.written"] })) {
+    if (event.type === "artifact.written" || event.type === "context.written") {
+      referenced.add(event.data.hash);
+    }
   }
 
   const objects = join(room.paths.atrium, OBJECTS_DIR);

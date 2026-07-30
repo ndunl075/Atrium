@@ -335,6 +335,13 @@ describe("diffing large artifacts", () => {
 });
 
 describe("gcBlobs", () => {
+  // Joining a room records its brief (see recordBrief in context.ts), which
+  // puts one blob in the store that no artifact event refers to. It is
+  // referenced — by `context.written` — so gc keeps it, and every count in
+  // this block includes it. Forgetting that is how a sweep would come to
+  // delete every recorded version of a room's brief.
+  const BRIEF_BLOB = 1;
+
   it("keeps every blob the log still points at, including superseded ones", () => {
     const { room } = tempRoom();
     const a = worker(room, "a");
@@ -345,9 +352,19 @@ describe("gcBlobs", () => {
     const result = gcBlobs(room);
 
     expect(result.removed).toBe(0);
-    expect(result.kept).toBe(2);
+    expect(result.kept).toBe(2 + BRIEF_BLOB);
     // The point of keeping it: an old version is still readable afterwards.
     expect(contentAt(room, "draft.md", v1.seq)?.toString("utf8")).toBe("version one");
+  });
+
+  it("keeps the brief's blob, which no artifact event refers to", () => {
+    const { room } = tempRoom();
+    worker(room, "a");
+
+    // Nothing has been written as an artifact at all, so an artifact-only
+    // sweep would find this blob unreferenced and reclaim the room's brief.
+    expect(gcBlobs(room, { dryRun: true }).removed).toBe(0);
+    expect(gcBlobs(room, { dryRun: true }).kept).toBe(BRIEF_BLOB);
   });
 
   it("removes content stored by a write that never recorded its event", () => {
@@ -366,7 +383,7 @@ describe("gcBlobs", () => {
     const result = gcBlobs(room);
 
     expect(result.removed).toBe(1);
-    expect(result.kept).toBe(1);
+    expect(result.kept).toBe(1 + BRIEF_BLOB);
     expect(result.bytesReclaimed).toBe(orphan.length);
     expect(loadBlob(room, orphanHash)).toBeUndefined();
     expect(contentAt(room, "draft.md", v1.seq)?.toString("utf8")).toBe("kept");
@@ -385,7 +402,7 @@ describe("gcBlobs", () => {
     const result = gcBlobs(room);
 
     expect(result.paths).toEqual(["ab/cdef.tmp-123-456"]);
-    expect(result.kept).toBe(1);
+    expect(result.kept).toBe(1 + BRIEF_BLOB);
   });
 
   it("reports without removing anything on a dry run", () => {

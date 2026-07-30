@@ -250,9 +250,12 @@ describe("membership", () => {
 
 describe("action budget", () => {
   it("spends the budget one event at a time", () => {
-    // Creating the room is itself an event, so a budget of 3 leaves room for
-    // exactly two joins.
-    const room = tempRoom({ config: { actionBudget: 3 } });
+    // Creating the room is itself an event. The first join costs two, not
+    // one: it also captures the brief into the log (see recordBrief in
+    // context.ts), which is a one-off — later joins find it unchanged and
+    // append nothing extra. So a budget of 4 leaves room for exactly two
+    // joins: created, brief, a, b.
+    const room = tempRoom({ config: { actionBudget: 4 } });
 
     room.join({ name: "a", role: "worker" });
     room.join({ name: "b", role: "worker" });

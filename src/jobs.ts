@@ -28,6 +28,7 @@
 import { writeFileSync } from "node:fs";
 
 import { createTask } from "./board.js";
+import { recordBrief } from "./context.js";
 import { InvalidError } from "./errors.js";
 import type { Room } from "./room.js";
 import type { Acceptance, AcceptanceKind, MemberId, TaskId } from "./types.js";
@@ -366,6 +367,10 @@ export function applyJob(room: Room, actorId: MemberId, job: Job): AppliedJob {
   let wroteContext = false;
   if (job.context !== undefined && job.context.trim() !== "") {
     writeFileSync(room.paths.context, ensureTrailingNewline(job.context), "utf8");
+    // Recorded rather than left on disk alone: this brief is what every task
+    // above was created to serve, and a log that held the tasks and not the
+    // brief would be missing the reason for all of them.
+    recordBrief(room, actorId);
     wroteContext = true;
   }
 

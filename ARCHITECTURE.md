@@ -57,13 +57,13 @@ The honest state of the project as of 2026-07-30. 21.5k lines of TypeScript, 522
 | YAML job declaration | `src/jobs.ts`, `src/yaml.ts` | `atrium init --from job.yaml`. Zero-dependency subset parser. §12.1 |
 | Runnable demo with reference workers | `examples/demo/`, `src/demo.test.ts` | `npm run demo`. Scripted MCP clients; doubles as a regression test. §12.1a |
 | Fork a room from a point in its log | `src/fork.ts` | `atrium fork`. Exact reconstruction, inherited history, provenance in the log. §12.7 |
+| The brief recorded in the log | `src/context.ts` | `context.written`, captured on join. `atrium context --record/--history/--at`. §4.1 |
 
 ### Not built
 
 | Capability | Status | Section |
 |---|---|---|
 | `atrium plan` — proposed board from the brief | `[PLANNED]` — next | §12.2 |
-| Record the brief in the log | `[OPEN]` — a real gap, found by §12.7 | §3.5, §12.7 |
 | `expectedOutput` contract on tasks | `[PLANNED]` | §12.3 |
 | Event stream for external observability | `[PLANNED]` | §12.4 |
 | `manager` role | `[PLANNED]` | §12.5 |
@@ -177,7 +177,7 @@ Append-only, totally ordered, the **single source of truth**. The board and the 
 
 This matters more than it sounds. Multi-agent systems fail in ways that are invisible at the time of failure and inexplicable afterward. An ordered log means any run can be replayed, diffed, and explained. Debuggability is the actual product feature here, not a nice-to-have.
 
-One thing it does not currently cover, which §12.7 found and §4 should be read alongside: **the room's brief is not in the log.** Pinning and unpinning are events; editing `CONTEXT.md` is a plain file write that nothing records. So the log captures every consequence of the instruction and not the instruction, and no amount of replaying recovers what an agent was actually told at the time. This is a genuine gap in the claim this section makes, not a deliberate exclusion.
+This once had a hole in it, found by §12.7 and now closed: the room's brief was not in the log. Pinning was an event; editing `CONTEXT.md` was a plain file write that nothing recorded, so the log held every consequence of the instruction and not the instruction. `context.written` records the brief's content under its hash in the same store artifacts use — see §4.1 for how, and why it had to be a capture rather than a write path.
 
 It also makes resumability fall out for free rather than needing a mechanism. A room has no in-memory state to lose: every reader folds the log, so a process that dies mid-job and a process that starts fresh a week later are the same case. Frameworks that pass state between agents in memory have to bolt on periodic checkpointing to get this back, and get a *sampled* history for their trouble; here there is nothing to checkpoint, because nothing was ever anywhere else.
 
@@ -192,6 +192,26 @@ Three tiers, in priority order:
 **Tier 2 — Artifact retrieval.** On-demand search over the Room working directory. `[ASSUMPTION]` Full-text search only at v1. No embeddings, no vector store. Most Rooms will hold fewer than a few hundred files, where FTS beats semantic search on both precision and setup cost. Add embeddings when a real Room proves FTS insufficient, not before.
 
 **Tier 3 — The log.** Agents can query what has already happened, which is how a joining agent catches up without anyone summarizing for it.
+
+### 4.1 Recording the brief `[SHIPPED]`
+
+The brief is an input to every decision the log records, and for a long time it was the one thing the log did not contain. Pinning and unpinning were events; editing `CONTEXT.md` was a plain file write nothing recorded. `atrium replay 12` could show every consequence of the instruction and never the instruction. §12.7 tripped over this — a fork could rewind a room's board, its files and its members, and not the sentence that told them all what to do.
+
+`context.written` closes it. Every version of the brief is stored under its sha256 in the same content-addressed store artifacts use, and the event records the hash, the size, and where the bytes came from.
+
+The difficulty is that the fix must not cost the property that makes Tier 1 work. **The brief has to stay a plain file anybody can edit in any editor**, without Atrium in the loop — the README tells people to do exactly that, and a brief that could only be changed through a tool would be a worse brief. So this is not a write path like `write_artifact`. It is a *capture*: hash what is on disk, compare against the last hash recorded, append an event only if they differ.
+
+Three things follow from that, and each is a deliberate choice:
+
+**Capture happens on join, not on read.** `Room.join` records the brief immediately before handing it to a new member — the moment before it is acted on, which is the honest place to say "this is what they were told". `getContext` stays a pure read. It would have been the obvious hook and it is the wrong one: the Watch UI polls it, and a read-only view that grew the log every few seconds would be its own kind of wrong.
+
+**The starter brief is not recorded.** `Room.create` writes a placeholder nobody has written yet. Recording it would put a meaningless first version at the head of every room's history and cost every room an event of its budget. The first version worth keeping is whatever replaces it.
+
+**`source` distinguishes writing from noticing.** `atrium` means Atrium wrote the bytes — seeding from a job file. `observed` means it read them off disk after the fact. A room must not claim somebody authored a change it merely found.
+
+`[CONFIRMED]` Drift between the file and the log is normal, not damage: somebody edited the brief and nobody has joined since. `atrium verify` reports it as `info`, and only once the room has members — a room nobody has joined has not handed its brief to anyone, so there is no decision the log is failing to explain. `atrium context --record` captures immediately for anyone who does not want to wait.
+
+`[OPEN]` A brief edited and then edited back before anybody joins leaves no trace of the intermediate version. Capture-on-join sees content, not keystrokes. This is the accepted cost of the brief staying an ordinary file, and the alternative — watching the filesystem — buys very little for a great deal of machinery.
 
 ### Boundary with Trayce `[OPEN]`
 
@@ -511,15 +531,13 @@ Blobs for every version at or below the fork point come across too, not just the
 
 **A pruned version cannot come back.** If a retention sweep dropped the bytes a fork needs, the fork has none either. Those paths are named in the result and in the `room.forked` event, so the new room's own history says what is missing instead of presenting a file that was never there as merely absent.
 
-#### The finding: the brief is not in the log
+#### The finding it produced, since fixed
 
-Building this turned up a real hole in §3.5's claim that the log is the single source of truth. **`CONTEXT.md` is not in it.** `context.pinned` and `context.unpinned` are events, but editing the brief itself is a plain file write that nothing records.
+Building this turned up a real hole in §3.5: **the brief was not in the log.** A fork could rewind a room's board, its files and its members, and not the sentence that told them all what to do — so it copied the brief as it stood *now* and said so, which was the only honest option then available.
 
-So `atrium replay 12` cannot tell you what the brief said at event 12, and neither can a fork. A fork copies the brief *as it is now* and says which it did, because that is the only honest option available.
+That is fixed. §4.1 has the design; the short version is that `context.written` records every version of the brief in the content-addressed store, captured on join rather than forced through a write path, so `CONTEXT.md` stays a file anybody can edit in any editor. A fork now rewinds the brief along with everything else, falling back to the current one — and saying which — only for a room whose brief predates the event or whose recorded bytes a sweep has taken.
 
-This is worth naming as its own defect rather than a footnote on forking. The brief is Tier 1 context (§4) — the first thing every agent reads, and therefore an input to every decision the log does record. A log that captures every consequence and not the instruction is missing the one thing that would explain the rest. Forking is simply the first feature to trip over it.
-
-`[OPEN]` The fix is presumably a `context.written` event recording a hash of the brief, with the bytes in the same content-addressed store the artifacts use — at which point the brief is versioned exactly like everything else and `atrium history CONTEXT.md` works. The open part is whether the brief then stops being a file a person can edit in a text editor without Atrium knowing, which is currently one of the better things about it.
+Worth keeping the sequence on the record: the gap had been in the document since the first draft and no amount of re-reading it would have surfaced the problem. Building the feature that depended on the claim is what showed the claim was false.
 
 ### 12.8 Agent cards for the roster `[OPEN]`
 

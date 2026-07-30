@@ -27,7 +27,11 @@ import {
   Room,
   applyConfigChange,
   applyJob,
+  briefAt,
+  briefDrift,
+  briefHistory,
   parseJob,
+  recordBrief,
   costSummary,
   createTask,
   currentLease,
@@ -73,6 +77,7 @@ import type {
   Acceptance,
   EventType,
   ForkPlan,
+  ForkResult,
   HistoryOptions,
   Job,
   Member,
@@ -619,17 +624,15 @@ with the same sequence numbers, followed by one "room.forked" event. Every
 artifact version at or below that point comes across too, so the fork's own
 "history" and "diff" work over the inherited past rather than starting blank.
 
-Three things it does not do, each for a different reason:
+Two things it does not do, each for a different reason:
 
   It reproduces the room, not the world. The log records that an acceptance
   command ran; it does not record the email that command sent, and a fork
   cannot unsend one.
 
-  It cannot rewind the brief. CONTEXT.md is the one part of a room that is
-  not in the log, so the fork gets the brief as it is now, not as it was.
-
   It cannot bring back pruned content. Paths whose bytes a retention sweep
-  dropped are named in the output and in the fork's own log.
+  dropped are named in the output and in the fork's own log. The same goes
+  for the brief, which is otherwise rewound along with everything else.
 
 Session tokens are not copied. Members exist in the fork's history, but
 nobody can authenticate as one until you run "atrium invite" against it.
@@ -699,11 +702,7 @@ export function cmdFork(argv: string[], sink: Sink): number {
 
     sink.out(`Forked "${room.config.name}" at event ${result.atSeq} into ${result.dir}`);
     for (const line of renderForkPlan(result)) sink.out(line);
-    sink.out(
-      result.contextCopied
-        ? "The brief was copied as it is now — the log does not record what it said at that point."
-        : "That room had no brief to copy.",
-    );
+    sink.out(describeForkedContext(result.context));
     sink.out(
       "Nobody can join the fork yet: session tokens are not copied. " +
         `Run "atrium invite ${target} --name <who> --role worker" first.`,
@@ -712,6 +711,15 @@ export function cmdFork(argv: string[], sink: Sink): number {
   } finally {
     room.close();
   }
+}
+
+/** What happened to the brief, said plainly enough to be acted on. */
+function describeForkedContext(context: ForkResult["context"]): string {
+  if (!context.copied) return "That room had no brief to copy.";
+  if (context.rewound) return "The brief was rewound to what it said at that point.";
+  return context.reason === "pruned"
+    ? "The brief at that point had been pruned, so the fork got the current one instead."
+    : "That brief was never recorded in the log, so the fork got the current one instead.";
 }
 
 function renderForkPlan(plan: ForkPlan): string[] {
@@ -859,10 +867,24 @@ silently dropped or summarized: ARCHITECTURE.md §6 puts that decision in
 front of a person, and the refusal names the ceiling, what the pin would
 have cost, and what is already pinned that could be unpinned instead.
 
+The brief is a plain file, editable in any editor without going through
+Atrium. What is recorded is its content: every version is stored under its
+hash and appended to the log as a "context.written" event, so "atrium
+replay" and "atrium fork" can recover what an agent was actually told, not
+just what it did about it.
+
+An edit made in an editor is captured the next time anybody joins the room,
+which is the moment before a member is handed the brief to work from. Until
+then the file and the log disagree, and "atrium verify" says so. --record
+captures it immediately instead of waiting.
+
 Options:
   --pin <path>    add an artifact to the shared brief
   --unpin <path>  remove an artifact from the shared brief
-  --json          print machine-readable JSON instead (display mode only)
+  --record        record the brief as it is on disk right now
+  --history       every recorded version of the brief
+  --at <seq>      the brief as it stood right after that event
+  --json          print machine-readable JSON instead (not with --pin/--unpin)
   --help, -h      show this help
 `;
 
@@ -874,6 +896,9 @@ export function cmdContext(argv: string[], sink: Sink): number {
       json: { type: "boolean" },
       pin: { type: "string" },
       unpin: { type: "string" },
+      record: { type: "boolean" },
+      history: { type: "boolean" },
+      at: { type: "string" },
     },
     allowPositionals: true,
   });
@@ -884,6 +909,15 @@ export function cmdContext(argv: string[], sink: Sink): number {
   if (values.pin !== undefined && values.unpin !== undefined) {
     sink.err("Choose either --pin or --unpin, not both.");
     return 2;
+  }
+
+  let at: number | undefined;
+  if (values.at !== undefined) {
+    at = Number(values.at);
+    if (!Number.isInteger(at) || at < 1) {
+      sink.err(`--at must be a whole event number, 1 or more (got "${values.at}").`);
+      return 2;
+    }
   }
 
   const dir = positionals[0] ?? process.cwd();
@@ -921,6 +955,75 @@ export function cmdContext(argv: string[], sink: Sink): number {
           : `${relPath} was not pinned; nothing changed.`,
       );
       return 0;
+    }
+
+    if (values.record) {
+      // Asked before anything else touches the room, because provisioning the
+      // CLI's own member is a join, and a join captures the brief itself.
+      // Without this the answer would be read after the capture had already
+      // happened, and the command would report "nothing changed" on the very
+      // run that recorded it.
+      const before = briefDrift(room);
+      const actorId = ensureCliHuman(room);
+      const recorded = recordBrief(room, actorId, "observed");
+
+      sink.out(
+        before.drifted
+          ? `Recorded the brief (${recorded.bytes} bytes).`
+          : "The brief already matches what the log last recorded; nothing changed.",
+      );
+      return 0;
+    }
+
+    if (values.history) {
+      const versions = briefHistory(room);
+      if (values.json) {
+        sink.out(JSON.stringify(versions, null, 2));
+        return 0;
+      }
+      if (versions.length === 0) {
+        sink.out("No version of this brief has been recorded yet.");
+        // Worth saying, because the usual reason is a room older than the
+        // event rather than a room whose brief was never written.
+        sink.out(dim('Run "atrium context --record" to record the one on disk now.'));
+        return 0;
+      }
+      for (const version of versions) {
+        const how = version.source === "observed" ? "changed on disk" : "written";
+        sink.out(
+          `#${version.seq}  ${version.ts}  ${version.bytes} bytes  ${how}` +
+            (version.readable ? "" : red("  (content pruned)")),
+        );
+      }
+      const drift = briefDrift(room);
+      if (drift.drifted) {
+        sink.out("");
+        sink.out(red("CONTEXT.md on disk does not match the last recorded version."));
+        sink.out(dim('Run "atrium context --record" to record it.'));
+      }
+      return 0;
+    }
+
+    if (at !== undefined) {
+      const version = briefAt(room, at);
+      if (values.json) {
+        sink.out(JSON.stringify(version, null, 2));
+        return 0;
+      }
+      switch (version.state) {
+        case "absent":
+          sink.out(`No brief had been recorded by event ${at}.`);
+          return 0;
+        case "pruned":
+          sink.err(
+            `The brief recorded at #${version.seq} had its content pruned, so it cannot be ` +
+              "read back. The version is still in the log; its bytes are not in the store.",
+          );
+          return 1;
+        default:
+          for (const line of version.text.split("\n")) sink.out(line);
+          return 0;
+      }
     }
 
     const context = getContext(room);

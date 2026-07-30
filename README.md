@@ -56,7 +56,8 @@ reached.
 
 ## Capabilities
 
-- Shared room context through `CONTEXT.md` and pinned artifacts.
+- Shared room context through `CONTEXT.md` and pinned artifacts, with every
+  version of the brief recorded in the log.
 - Dependency-aware tasks with atomic claims and expiring claim leases.
 - Artifact leases that prevent concurrent writers from silently overwriting
   one another.
@@ -290,6 +291,23 @@ node dist/cli.js history draft.md ./newsroom
 node dist/cli.js diff draft.md ./newsroom
 ```
 
+### The brief is versioned too
+
+`CONTEXT.md` is a plain file you can edit in any editor — nothing about that
+changed. What changed is that its content is recorded: every version is stored
+under its hash and appended to the log, so a replay or a fork can recover what
+an agent was actually told, not just what it did afterwards.
+
+An edit made in your editor is captured the next time anybody joins the room,
+which is the moment before a member is handed the brief to work from. Until
+then the file and the log disagree, and `atrium verify` says so.
+
+```sh
+node dist/cli.js context --history ./newsroom   # every recorded version
+node dist/cli.js context --at 12 ./newsroom     # what the brief said back then
+node dist/cli.js context --record ./newsroom    # capture an edit right now
+```
+
 ### Fork a room and try it differently
 
 `replay` shows how the board looked at a point in the log. `fork` continues
@@ -309,17 +327,15 @@ rooms and the divergence has a sequence number.
 Every artifact version at or below the fork point comes across too, so
 `history` and `diff` work over the inherited past rather than starting blank.
 
-Three limits, stated up front because a fork is only useful if you know what
-it is not:
+Two limits, stated up front because a fork is only useful if you know what it
+is not:
 
 - **It reproduces the room, not the world.** The log records that an
   acceptance command ran; it does not record the email that command sent, and
   a fork cannot unsend one.
-- **It cannot rewind the brief.** `CONTEXT.md` is the one part of a room that
-  is not recorded in the log, so a fork copies the brief as it is now, not as
-  it was.
 - **It cannot bring back pruned content.** Paths whose bytes a retention sweep
-  dropped are named in the output and in the fork's own log.
+  dropped are named in the output and in the fork's own log. The same applies
+  to the brief, which is otherwise rewound along with everything else.
 
 Session tokens are not copied. Members exist in the fork's history, but nobody
 can authenticate as one until you run `atrium invite` against it.
