@@ -1,100 +1,83 @@
 <p align="center">
-  <img src="assets/logo.png" alt="" width="120" height="120">
+  <img src="assets/logo.png" alt="Atrium logo" width="120" height="120">
 </p>
 
 <h1 align="center">Atrium</h1>
 
 <p align="center">
-  <strong>A shared workspace that multiple AI agents join in order to do one job together.</strong>
-</p>
-
-<p align="center">
-  <img src="assets/atrium-courtyard.jpg" alt="An illustrated shared atrium where work flows through a central board" width="900">
+  <strong>Local-first coordination infrastructure for multiple AI agents working in a shared room.</strong>
 </p>
 
 <p align="center">
   <a href="https://github.com/ndunl075/Atrium/actions/workflows/ci.yml"><img src="https://github.com/ndunl075/Atrium/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
 </p>
 
-Atrium is not a framework for building agents. It does not define agent
-personalities, prompt templates, or reasoning loops. Agents arrive already
-built, from whatever stack they came from, and Atrium gives them a room to work
-in: a shared brief, a task board, a shared filesystem, and a record of what
-happened.
+<p align="center">
+  <img src="assets/atrium-courtyard.jpg" alt="An illustrated shared atrium where work flows through a central board" width="900">
+</p>
 
-> Status: early. The foundation is in place; the features on top of it are
-> being built. See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design and
-> for what is still undecided.
+Atrium provides a shared brief, task board, filesystem, member roster, and
+ordered event history for teams of AI agents. It is compatible with agents from
+different frameworks because coordination happens through shared room state
+rather than a framework-specific agent runtime.
 
-## The two ideas worth stealing
+Atrium does not define agent personalities, prompts, reasoning loops, or model
+providers. Agents arrive with those capabilities and connect to a room through
+MCP or a process adapter.
 
-**Agents do not message each other. They read and write shared state.** Every
-handoff between language models is a lossy summary; shared state has no handoff,
-so there is nothing to lose. Any agent that can read and write the room can take
-part, whatever it was built with.
+> **Development status:** Alpha (`0.2.0`). Core room coordination, task
+> acceptance, artifact history, replay, the Watch UI, and the optional runner
+> are functional. Interfaces may still change.
 
-**No agent marks its own work done.** Self-declared completion is the most
-common way multi-agent systems fail: something plausible gets announced as
-finished, and everything downstream is built on it. In Atrium every task says up
-front how it is allowed to be called done — a command that has to exit zero, a
-different member's sign-off, or a human's.
+## Design principles
 
-## How it is put together
+### Shared state
 
-Everything that happens is appended to a single ordered log. The task board and
-the roster are folded out of that log rather than stored beside it, so there is
-no second copy of the truth to drift, and any run can be replayed to any point.
-Debuggability is the feature, not a nice-to-have.
+Agents coordinate by reading and updating the same room state. This avoids
+repeated point-to-point summaries and allows agents from unrelated runtimes to
+work together.
 
-```
-my-room/
-  .atrium/
-    log.db        every event, append-only
-    room.json     settings
-    tokens.json   session tokens
-    objects/      content-addressed blobs, one per unique artifact version
-  CONTEXT.md      the shared brief
-  ...             whatever the agents are producing
-```
+### Independent acceptance
 
-Every artifact write stores its bytes under `objects/<hash prefix>/<hash
-rest>`, keyed by the sha256 the log already records. Rewriting the same
-content back costs nothing — the blob is already there — so `atrium history`
-and `atrium diff` can show what a document actually said at any point the log
-remembers, not just that something was written.
+An agent cannot approve its own submission. Each task defines its acceptance
+mechanism in advance:
 
-The cost of that is a store which only grows: every version the log refers to
-is kept, because being able to read it back later is the entire point. Plan
-for a long-lived room's `.atrium/` to be roughly the sum of every distinct
-version it has ever written.
+- A command that must exit successfully.
+- Approval from another reviewer.
+- Approval from a human.
+- Optional unchecked acceptance when explicitly permitted by room policy.
 
-Two commands act on that, and they are deliberately different in kind.
+### Replayable history
 
-`atrium gc` is safe and reclaims only what is genuinely garbage: bytes stored
-by a write that died before recording its event, and temporary files left by
-one that died before the rename. It never touches anything the log points at,
-so it cannot lose you anything.
+Every state change is appended to one ordered event log. The task board and
+member roster are projections of that log, allowing Atrium to reconstruct the
+room at an earlier sequence number and explain how the current state was
+reached.
 
-`atrium prune` discards history, and is the only thing in Atrium that does. It
-drops the content of all but the most recent N versions of each artifact,
-where N is the room's `retainVersionsPerPath` (`0`, keep everything, by
-default) or `--keep` for one run. Nothing prunes automatically even once the
-setting is there — you run the command, so the decision stays a person's.
-Start with `--dry-run`.
+## Capabilities
 
-What a prune removes is bytes, not record. Every version stays in the log and
-keeps listing in `atrium history`; what changes is that its content can no
-longer be read back. Everything that reads history knows the difference
-between "this path did not exist then" and "it did, and its content is gone",
-and says which — `atrium diff` refuses to diff against a pruned version rather
-than showing it as an empty file, and an agent reading one over MCP is told
-the write happened and the bytes are gone, not that the file never existed.
+- Shared room context through `CONTEXT.md` and pinned artifacts.
+- Dependency-aware tasks with atomic claims and expiring claim leases.
+- Artifact leases that prevent concurrent writers from silently overwriting
+  one another.
+- Command, reviewer, and human acceptance policies.
+- Versioned artifact content with history and unified diffs.
+- Ordered event history and point-in-time board replay.
+- MCP access over stdio or authenticated HTTP.
+- Read-only Watch UI with live task, member, artifact, and agent-activity
+  views.
+- Optional process runner for bounded worker dispatch.
+- Advisory per-room and per-member cost accounting.
+- Storage verification, garbage collection, and explicit history pruning.
 
-## Getting a room going
+## Requirements
 
-Node 22.5 or newer, and nothing else. Storage uses the `node:sqlite` module
-built into Node, so there is no native module to compile, no database to run,
-and **no runtime dependencies at all**.
+- Node.js 22.5 or newer.
+
+Atrium uses the `node:sqlite` module included with Node. It has no runtime npm
+dependencies and does not require a separate database server.
+
+## Installation
 
 ```sh
 npm install
@@ -102,134 +85,239 @@ npm run build
 npm test
 ```
 
-For local development, one command builds the project, creates `./demo-room`
-when needed, and starts the Watch UI:
+Commands in this README use `node dist/cli.js` when running from a source
+checkout. After installing Atrium as a package, use the equivalent `atrium`
+command.
+
+## Local development
+
+Start a local demo room and the Watch UI with one command:
 
 ```sh
 npm run dev
 ```
 
-It prints the localhost URL and automatically moves to the next available port
-if port 3000 is already occupied. Pass another room after `--` when needed:
+The command:
+
+1. Builds Atrium.
+2. Creates `./demo-room` if it does not exist.
+3. Selects an available localhost port.
+4. Prints the URL for the Watch UI.
+
+To use another room:
 
 ```sh
 npm run dev -- ./my-room
 ```
 
-Make a room and say what the job is:
+## Quick start
+
+Create a room:
 
 ```sh
 node dist/cli.js init ./newsroom
-$EDITOR ./newsroom/CONTEXT.md      # the first thing every agent reads
 ```
 
-Point an MCP client at it. In most clients that is one config entry:
+Edit the shared brief:
+
+```sh
+$EDITOR ./newsroom/CONTEXT.md
+```
+
+Start the read-only Watch UI:
+
+```sh
+node dist/cli.js watch ./newsroom
+```
+
+The Watch UI displays the brief, board, artifacts, activity history, and a live
+agent floor that reflects member and task states.
+
+## Connect an MCP client
+
+### Local stdio transport
+
+Add the room as an MCP server in the client configuration:
 
 ```json
 {
   "mcpServers": {
-    "newsroom": { "command": "atrium", "args": ["serve", "./newsroom"] }
+    "newsroom": {
+      "command": "atrium",
+      "args": ["serve", "./newsroom"]
+    }
   }
 }
 ```
 
-The agent calls `join` first, which hands back a session token and the brief.
-There is no SDK to install and nothing Atrium-specific to write.
+The agent calls `join` first and receives a session token and the room brief.
+No Atrium-specific SDK is required.
 
-For a client that cannot spawn a process — a browser, or anything across a
-container boundary — run `atrium serve ./newsroom --http` instead, and point
-it at `http://127.0.0.1:<port>/mcp` with a single JSON-RPC endpoint (`POST`
-only; `GET` answers 405). It binds to `127.0.0.1` and stays off the network by
-default. Every request needs `Authorization: Bearer <token>`, since anything
-on the machine can reach an HTTP port and there is no anonymous `join` over
-it — get a token with `atrium invite ./newsroom --name scout --role worker`
-first, the same token a stdio client would get back from `join`.
+### HTTP transport
 
-Watch what happens from the outside:
+For clients that cannot launch a local process:
 
 ```sh
-node dist/cli.js board ./newsroom     # what needs doing, and who has it
-node dist/cli.js log ./newsroom       # everything that happened, in order
-node dist/cli.js replay 12 ./newsroom # how the board looked at step 12
-node dist/cli.js cost ./newsroom      # self-reported spend against the caps, if any are set
-node dist/cli.js history draft.md ./newsroom  # every version this file has had
-node dist/cli.js diff draft.md ./newsroom     # what changed between the last two
-node dist/cli.js roster ./newsroom            # who's here, their tags, and their self-reported manifest
-node dist/cli.js watch ./newsroom             # a read-only web view, live in a browser
+node dist/cli.js serve ./newsroom --http
 ```
 
-Or run one bounded dispatch pass with operator-configured worker commands.
-Save this as `newsroom/.atrium/runner.json`:
+The server exposes a JSON-RPC MCP endpoint at:
 
-```json
-{
-  "workers": [
-    { "name": "codex", "command": "node ./codex-worker.mjs" },
-    { "name": "claude", "command": "node ./claude-worker.mjs" }
-  ],
-  "maxConcurrent": 2
-}
+```text
+http://127.0.0.1:<port>/mcp
 ```
+
+HTTP requests require a bearer token. Create one before connecting:
 
 ```sh
-node dist/cli.js run ./newsroom --dry-run
-node dist/cli.js run ./newsroom
+node dist/cli.js invite ./newsroom --name scout --role worker
 ```
 
-The runner puts the room and assignment in `ATRIUM_ROOM`,
-`ATRIUM_TASK_ID`, `ATRIUM_TASK_TITLE`, `ATRIUM_TASK_DESCRIPTION`, and
-`ATRIUM_WORKER_NAME`. A launched worker still joins and claims through Atrium;
-the runner never keeps a second private task board.
+Atrium binds to `127.0.0.1` by default. Binding to another interface can expose
+room content and should be done deliberately.
 
-Or put a hand on the board yourself, the same way a human member would:
+## Operate a room
+
+### Inspect state
+
+```sh
+node dist/cli.js open ./newsroom
+node dist/cli.js board ./newsroom
+node dist/cli.js roster ./newsroom
+node dist/cli.js artifacts ./newsroom
+node dist/cli.js log ./newsroom
+node dist/cli.js cost ./newsroom
+```
+
+### Inspect history
+
+```sh
+node dist/cli.js replay 12 ./newsroom
+node dist/cli.js history draft.md ./newsroom
+node dist/cli.js diff draft.md ./newsroom
+```
+
+### Administer tasks
 
 ```sh
 node dist/cli.js task add ./newsroom --title "Fact-check the draft"
 node dist/cli.js task show <task-id> ./newsroom
 node dist/cli.js task review <task-id> ./newsroom --accept
-node dist/cli.js task review <task-id> ./newsroom --reject --reason "cites a dead link"
-node dist/cli.js task release <task-id> ./newsroom   # a claim stuck on a crashed agent
-node dist/cli.js task unblock <task-id> ./newsroom   # restart a task frozen after too many rejections
+node dist/cli.js task review <task-id> ./newsroom --reject --reason "Citation is unavailable"
+node dist/cli.js task release <task-id> ./newsroom
+node dist/cli.js task unblock <task-id> ./newsroom
 ```
 
-These all act as a single, auto-provisioned "cli" member with the `human`
-role — created the first time any of them touches a room, then reused, so
-there is nothing to configure and no member id to look up first. Reviewing
-still goes through the same rule everything else does: whoever submitted the
-work, including that member itself, can never be the one who accepts or
-rejects it.
+Administrative task commands use an automatically provisioned CLI member with
+the `human` role. The submitter of a task cannot review the same submission,
+including when the submitter is the CLI member.
 
-## What a room looks like from a client
+## Optional worker runner
 
-The ones that matter are `join`, `list_tasks`, `claim_task`, `read_artifact`,
-`write_artifact`, `submit_task`, `review_task`. There's also `list_members`, so
-an agent can see who else is in the room and what each one says it's good for —
-self-reported on join, same as everywhere else this shows up, so it's a lead
-worth following up on, not a verified fact. Call `tools/list` for the rest.
+Atrium can perform one bounded dispatch pass using operator-defined worker
+commands. Create `newsroom/.atrium/runner.json`:
 
-An agent that hands in work does not get to decide it is finished. Depending on
-what the task said when it was created, submitting either runs a command whose
-exit code decides, or hands the work to a different member. A rejection puts the
-task back on the board with the reason attached. After enough rejections the
-task freezes and waits for a human, so nothing loops forever.
+```json
+{
+  "workers": [
+    {
+      "name": "codex",
+      "command": "node ./codex-worker.mjs"
+    },
+    {
+      "name": "claude",
+      "command": "node ./claude-worker.mjs"
+    }
+  ],
+  "maxConcurrent": 2
+}
+```
 
-## Status
+Review the dispatch plan:
 
-The v0.1 job works end to end: research, then draft, then review, with a
-rejection that genuinely sends work back. `src/workflow.test.ts` is that job,
-written the way an agent would drive it, so it fails if the pieces stop adding
-up even when every unit test still passes.
+```sh
+node dist/cli.js run ./newsroom --dry-run
+```
 
-Rooms can also set a per-room and per-member spend cap now (`atrium cost`,
-`report_cost`). It is honest advisory accounting, not enforcement: Atrium does
-not make the model calls, so it only totals what a member chooses to report,
-and a member that never reports is never charged. Crossing a cap halts the
-room the same way running out of action budget does.
+Launch the configured workers:
 
-Not done yet: the read-only watch UI, embeddings, and rooms spanning more than
-one machine. See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design,
-including the parts still marked open.
+```sh
+node dist/cli.js run ./newsroom
+```
+
+Each process receives:
+
+- `ATRIUM_ROOM`
+- `ATRIUM_TASK_ID`
+- `ATRIUM_TASK_TITLE`
+- `ATRIUM_TASK_DESCRIPTION`
+- `ATRIUM_WORKER_NAME`
+
+The runner starts workers but does not maintain a separate task board. A worker
+must still join the room and claim its assigned task through Atrium.
+
+## MCP tool surface
+
+Primary tools include:
+
+- `join`
+- `get_context`
+- `list_members`
+- `list_tasks`
+- `claim_task`
+- `read_artifact`
+- `write_artifact`
+- `submit_task`
+- `review_task`
+- `post_note`
+- `read_log`
+
+Use `tools/list` from the MCP client for the complete tool set.
+
+## Storage model
+
+Each room is a normal directory:
+
+```text
+my-room/
+  .atrium/
+    log.db        append-only event log
+    room.json     room settings
+    tokens.json   session tokens
+    objects/      content-addressed artifact versions
+  CONTEXT.md      shared room brief
+  ...             project artifacts
+```
+
+Artifact content is stored by SHA-256 hash. Identical content is stored once,
+while each write remains represented in the event history.
+
+The object store grows as new artifact versions are recorded. Atrium provides
+two separate maintenance operations:
+
+- `atrium gc` removes unreferenced blobs and abandoned temporary files. It does
+  not remove content referenced by the event log.
+- `atrium prune` deliberately removes older artifact content according to a
+  retention policy. Run it with `--dry-run` before applying changes.
+
+Pruning removes stored bytes, not historical records. History continues to show
+that a version existed, while reads and diffs report that its content is no
+longer retained.
+
+## Current scope
+
+Atrium currently supports local, single-machine rooms. The core research,
+draft, review, rejection, and resubmission workflow is covered end to end by
+`src/workflow.test.ts`.
+
+Cost accounting is advisory because Atrium does not make model calls directly.
+Members or adapters must report their usage. A process that does not report
+costs cannot be included in Atrium's totals.
+
+Distributed rooms, semantic retrieval, and enforced model-level cost metering
+are not currently implemented. See [ARCHITECTURE.md](./ARCHITECTURE.md) for
+design details and open decisions.
 
 ## License
 
-Apache 2.0.
+Apache License 2.0.
