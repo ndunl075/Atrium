@@ -118,6 +118,9 @@ describe("serveWatch", () => {
     expect(body).toContain('href="#board-section"');
     expect(body).toContain('class="workspace"');
     expect(body).toContain("room notebook");
+    expect(body).toContain('id="agent-floor"');
+    expect(body).toContain("What every agent is doing right now");
+    expect(body).toContain("Ready for work");
     expect(body).toContain('class="room-visual"');
     expect(body).toContain('src="/assets/atrium-courtyard.jpg"');
     expect(body).toContain("Agents work apart");
@@ -132,6 +135,34 @@ describe("serveWatch", () => {
     expect(res.headers.get("content-type")).toBe("image/jpeg");
     expect(bytes.byteLength).toBeGreaterThan(100_000);
     expect([...bytes.slice(0, 3)]).toEqual([0xff, 0xd8, 0xff]);
+  });
+
+  it("shows an animated preview crew when the room has no real members yet", async () => {
+    const { body } = await get(await start(tempRoom()));
+
+    expect(body).toContain("Preview crew");
+    expect(body).toContain('data-preview="true"');
+    expect(body).toContain("Scout");
+    expect(body).toContain("Builder");
+    expect(body).toContain("Critic");
+    expect(body).toContain("Researching");
+    expect(body).toContain("Building");
+    expect(body).toContain("Reviewing work");
+  });
+
+  it("shows a claimed task as a real agent actively working", async () => {
+    const room = tempRoom();
+    const worker = room.join({ name: "Ada", role: "worker" }).member;
+    const task = createTask(room, worker.id, { title: "Build the live map" });
+    claimTask(room, worker.id, task.id);
+
+    const { body } = await get(await start(room));
+
+    expect(body).toContain('data-status="working"');
+    expect(body).toContain("Ada");
+    expect(body).toContain("Working now");
+    expect(body).toContain("Build the live map");
+    expect(body).not.toContain("Preview crew");
   });
 
   it("escapes member and task text that could otherwise inject markup", async () => {
@@ -531,6 +562,7 @@ describe("the live board", () => {
     expect(body).toMatch(/<div id="roster">[\s\S]*scout[\s\S]*<\/div>/);
     expect(body).toContain('<div id="artifacts">');
     expect(body).toContain('<div id="brief">');
+    expect(body).toContain('<div id="agent-floor">');
     expect(body).toContain('id="hdr-members"');
     expect(body).toContain('id="hdr-tasks"');
     expect(body).toContain('id="hdr-tokens"');
@@ -548,6 +580,7 @@ describe("the live board", () => {
     const seen = await collectSse(res, (t) => t.includes("event: board"));
 
     expect(seen).toContain("event: board");
+    expect(seen).toContain("event: agents");
     expect(seen).toContain("Draft the opening");
   });
 
@@ -582,6 +615,7 @@ describe("the live board", () => {
     const seen = await collectSse(res, (t) => t.includes("event: meta"));
 
     expect(seen).toContain("event: roster");
+    expect(seen).toContain("event: agents");
     expect(seen).toContain("newcomer");
     expect(seen).toContain("event: meta");
     expect(seen).toMatch(/"members":"1 member"/);
@@ -635,6 +669,7 @@ describe("the live board", () => {
     // none of the region events should have fired for it.
     expect(seen).not.toContain("event: board");
     expect(seen).not.toContain("event: roster");
+    expect(seen).not.toContain("event: agents");
     expect(seen).not.toContain("event: artifacts");
     expect(seen).not.toContain("event: brief");
     expect(seen).not.toContain("event: halted");

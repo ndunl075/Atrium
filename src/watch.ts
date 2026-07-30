@@ -281,6 +281,8 @@ body.stale #board, body.stale #roster, body.stale #artifacts, body.stale #brief 
   opacity: 0.55;
 }
 
+body.stale #agent-floor { opacity: 0.55; }
+
 pre.brief {
   margin: 0; font-family: var(--mono); font-size: 13px; line-height: 1.6;
   white-space: pre-wrap; word-break: break-word; overflow-x: auto;
@@ -569,6 +571,329 @@ header.masthead {
     conic-gradient(from 15deg, #e37a2f, var(--sun), #7e9357, #17324d, #e37a2f);
 }
 
+.agent-floor-shell {
+  position: relative;
+  overflow: hidden;
+  min-height: 430px;
+  padding: 22px;
+  color: #f8f1dc;
+  background:
+    radial-gradient(circle at 50% 48%, rgba(243, 211, 79, 0.15), transparent 31%),
+    linear-gradient(145deg, #132b40, #1d1d18 72%);
+  border: 1.5px solid #0c1822;
+  border-radius: 18px 18px 6px 18px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+
+.agent-floor-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: 0.22;
+  background:
+    linear-gradient(30deg, transparent 49.6%, rgba(243, 211, 79, 0.35) 50%, transparent 50.4%)
+      0 0 / 74px 74px,
+    linear-gradient(150deg, transparent 49.6%, rgba(243, 211, 79, 0.2) 50%, transparent 50.4%)
+      0 0 / 74px 74px;
+  pointer-events: none;
+}
+
+.floor-toolbar {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 22px;
+}
+
+.floor-toolbar p {
+  max-width: 580px;
+  margin: 3px 0 0;
+  color: #b9c5ca;
+  font-size: 12px;
+}
+
+.floor-mode {
+  flex: 0 0 auto;
+  padding: 5px 9px;
+  color: #1d1d18;
+  background: var(--sun);
+  border: 1px solid #f7e58e;
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.agent-scene {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: minmax(210px, 0.75fr) minmax(0, 2fr);
+  gap: 20px;
+  align-items: stretch;
+}
+
+.shared-core {
+  position: relative;
+  display: grid;
+  place-content: center;
+  min-height: 270px;
+  padding: 24px;
+  text-align: center;
+  color: #1d1d18;
+  background: var(--sun);
+  border: 1.5px solid #0c1822;
+  border-radius: 48% 52% 45% 55% / 55% 43% 57% 45%;
+  box-shadow: 7px 7px 0 #08131c;
+  transform: rotate(-1deg);
+}
+
+.shared-core::before,
+.shared-core::after {
+  content: "";
+  position: absolute;
+  width: 34px;
+  height: 46px;
+  background: #fff9df;
+  border: 1px solid #1d1d18;
+  box-shadow: 2px 2px 0 rgba(29, 29, 24, 0.35);
+}
+
+.shared-core::before { top: 24px; left: 28px; transform: rotate(-9deg); }
+.shared-core::after { right: 28px; bottom: 24px; transform: rotate(7deg); }
+
+.core-mark {
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  margin: 0 auto 9px;
+  color: var(--sun);
+  background: var(--ink);
+  border-radius: 16px 16px 5px 16px;
+  font-family: var(--serif);
+  font-size: 28px;
+  font-weight: 800;
+}
+
+.shared-core strong {
+  font-family: var(--serif);
+  font-size: 21px;
+  letter-spacing: -0.025em;
+}
+
+.core-counts {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 11px;
+}
+
+.core-counts span {
+  padding: 4px 7px;
+  background: rgba(255, 255, 255, 0.52);
+  border: 1px solid rgba(29, 29, 24, 0.35);
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 9px;
+}
+
+.agent-stations {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+}
+
+.agent-station {
+  position: relative;
+  min-height: 128px;
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 11px;
+  align-items: center;
+  padding: 13px;
+  color: var(--ink);
+  background: #fff9e8;
+  border: 1.5px solid #0c1822;
+  border-radius: 16px 16px 5px 16px;
+  box-shadow: 4px 4px 0 #08131c;
+}
+
+.agent-station[data-status="away"] { filter: grayscale(0.8); opacity: 0.63; }
+.agent-station[data-preview="true"] { border-style: dashed; }
+
+.agent-character {
+  position: relative;
+  width: 68px;
+  height: 92px;
+}
+
+.agent-head {
+  position: absolute;
+  top: 2px;
+  left: 20px;
+  width: 31px;
+  height: 31px;
+  background: #f0b987;
+  border: 1.5px solid var(--ink);
+  border-radius: 50% 50% 44% 44%;
+  z-index: 3;
+}
+
+.agent-head::before {
+  content: "";
+  position: absolute;
+  inset: -3px 2px 16px -2px;
+  background: var(--agent-color, #de7a35);
+  border-radius: 60% 60% 35% 35%;
+}
+
+.agent-head::after {
+  content: "••";
+  position: absolute;
+  left: 8px;
+  top: 11px;
+  color: var(--ink);
+  font-size: 8px;
+  letter-spacing: 5px;
+}
+
+.agent-body {
+  position: absolute;
+  top: 31px;
+  left: 15px;
+  width: 41px;
+  height: 43px;
+  background: var(--agent-color, #de7a35);
+  border: 1.5px solid var(--ink);
+  border-radius: 12px 12px 5px 5px;
+  z-index: 2;
+}
+
+.agent-arm {
+  position: absolute;
+  top: 43px;
+  left: 5px;
+  width: 30px;
+  height: 9px;
+  background: #f0b987;
+  border: 1.5px solid var(--ink);
+  border-radius: 999px;
+  transform-origin: right center;
+  transform: rotate(-13deg);
+  z-index: 3;
+}
+
+.mini-desk {
+  position: absolute;
+  left: 2px;
+  right: 0;
+  bottom: 2px;
+  height: 22px;
+  background: #d9c590;
+  border: 1.5px solid var(--ink);
+  border-radius: 5px 5px 2px 2px;
+  z-index: 4;
+}
+
+.mini-desk::before {
+  content: "";
+  position: absolute;
+  width: 26px;
+  height: 18px;
+  right: 7px;
+  bottom: 15px;
+  background: #183149;
+  border: 1.5px solid var(--ink);
+  border-radius: 3px;
+}
+
+.agent-copy { min-width: 0; }
+
+.agent-copy strong {
+  display: block;
+  overflow: hidden;
+  font-family: var(--serif);
+  font-size: 17px;
+  line-height: 1.05;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-role {
+  display: block;
+  margin: 4px 0 9px;
+  color: var(--ink-faint);
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.agent-action {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.agent-action::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  background: #658049;
+  border: 1px solid var(--ink);
+  border-radius: 50%;
+}
+
+[data-status="working"] .agent-action::before { background: #e37a2f; }
+[data-status="reviewing"] .agent-action::before,
+[data-status="waiting"] .agent-action::before { background: #d8b927; }
+[data-status="away"] .agent-action::before { background: #938f84; }
+
+.agent-task {
+  display: -webkit-box;
+  overflow: hidden;
+  margin-top: 5px;
+  color: var(--ink-soft);
+  font-size: 10px;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.agent-station.role-reviewer { --agent-color: #d9b93c; }
+.agent-station.role-human { --agent-color: #789260; }
+.agent-station.role-worker { --agent-color: #dd7938; }
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-status="working"] .agent-arm { animation: agent-type 620ms ease-in-out infinite alternate; }
+  [data-status="reviewing"] .agent-head { animation: agent-review 1.4s ease-in-out infinite alternate; }
+  [data-status="waiting"] .agent-action::before { animation: agent-pulse 1.2s ease-in-out infinite; }
+}
+
+@keyframes agent-type {
+  from { transform: rotate(-16deg) translateY(0); }
+  to { transform: rotate(-4deg) translateY(2px); }
+}
+
+@keyframes agent-review {
+  from { transform: translateX(-2px) rotate(-2deg); }
+  to { transform: translateX(2px) rotate(2deg); }
+}
+
+@keyframes agent-pulse {
+  50% { box-shadow: 0 0 0 5px rgba(216, 185, 39, 0.25); }
+}
+
 header.masthead::after {
   content: "";
   position: absolute;
@@ -854,6 +1179,8 @@ button:hover {
     grid-template-columns: minmax(0, 1fr) minmax(260px, 0.8fr);
     min-height: 0;
   }
+  .agent-scene { grid-template-columns: 1fr; }
+  .shared-core { min-height: 190px; border-radius: 30px 30px 9px 30px; }
 }
 
 @media (max-width: 640px) {
@@ -870,6 +1197,10 @@ button:hover {
   .room-masthead { grid-template-columns: 1fr; gap: 22px; }
   .room-visual { transform: none; }
   .room-visual figcaption { right: 8px; }
+  .agent-floor-shell { min-height: 0; padding: 15px; }
+  .floor-toolbar { display: block; }
+  .floor-mode { display: inline-block; margin-top: 10px; }
+  .agent-stations { grid-template-columns: 1fr; }
 }
 `;
 
@@ -1024,6 +1355,178 @@ function renderBoard(tasks: Task[], names: Map<MemberId, string>): string {
   return groups.join("");
 }
 
+type AgentFloorStatus = "working" | "reviewing" | "waiting" | "ready" | "away";
+
+interface AgentFloorItem {
+  name: string;
+  role: "worker" | "reviewer" | "human";
+  status: AgentFloorStatus;
+  action: string;
+  detail: string;
+  preview?: boolean;
+}
+
+function memberFloorItem(
+  member: ReturnType<Room["roster"]>[number],
+  tasks: Task[],
+): AgentFloorItem {
+  if (!member.active) {
+    return {
+      name: member.name,
+      role: member.role,
+      status: "away",
+      action: "Away from room",
+      detail: "This member has left.",
+    };
+  }
+
+  const ownTask = tasks.find(
+    (task) =>
+      (task.state === "claimed" || task.state === "submitted") &&
+      (task.claimedBy === member.id || task.submittedBy === member.id),
+  );
+  if (ownTask?.state === "claimed") {
+    return {
+      name: member.name,
+      role: member.role,
+      status: "working",
+      action: "Working now",
+      detail: ownTask.title,
+    };
+  }
+  if (ownTask?.state === "submitted") {
+    return {
+      name: member.name,
+      role: member.role,
+      status: "waiting",
+      action: "Waiting on review",
+      detail: ownTask.title,
+    };
+  }
+
+  const review = tasks.find((task) => task.state === "submitted");
+  if ((member.role === "reviewer" || member.role === "human") && review) {
+    return {
+      name: member.name,
+      role: member.role,
+      status: "reviewing",
+      action: "Reviewing work",
+      detail: review.title,
+    };
+  }
+
+  const escalation = tasks.find((task) => task.escalated);
+  if (member.role === "human" && escalation) {
+    return {
+      name: member.name,
+      role: member.role,
+      status: "reviewing",
+      action: "Handling escalation",
+      detail: escalation.title,
+    };
+  }
+
+  return {
+    name: member.name,
+    role: member.role,
+    status: "ready",
+    action: member.role === "human" ? "Coordinating room" : "Ready for work",
+    detail: tasks.some((task) => task.state === "open")
+      ? "An open task is available."
+      : "Watching the shared board.",
+  };
+}
+
+function renderAgentStation(item: AgentFloorItem): string {
+  return `<article class="agent-station role-${item.role}" data-status="${item.status}"${
+    item.preview ? ` data-preview="true"` : ""
+  } aria-label="${escapeHtml(`${item.name}, ${item.action}: ${item.detail}`)}">
+    <div class="agent-character" aria-hidden="true">
+      <span class="agent-head"></span>
+      <span class="agent-body"></span>
+      <span class="agent-arm"></span>
+      <span class="mini-desk"></span>
+    </div>
+    <div class="agent-copy">
+      <strong>${escapeHtml(item.name)}</strong>
+      <span class="agent-role">${escapeHtml(item.role)}</span>
+      <span class="agent-action">${escapeHtml(item.action)}</span>
+      <span class="agent-task">${escapeHtml(item.detail)}</span>
+    </div>
+  </article>`;
+}
+
+function renderAgentFloor(room: Room, tasks = listTasks(room)): string {
+  const members = room.roster();
+  const preview = members.length === 0;
+  const items: AgentFloorItem[] = preview
+    ? [
+        {
+          name: "Scout",
+          role: "worker",
+          status: "working",
+          action: "Researching",
+          detail: "Collecting evidence for the shared brief.",
+          preview: true,
+        },
+        {
+          name: "Builder",
+          role: "worker",
+          status: "working",
+          action: "Building",
+          detail: "Turning an open task into an artifact.",
+          preview: true,
+        },
+        {
+          name: "Critic",
+          role: "reviewer",
+          status: "reviewing",
+          action: "Reviewing work",
+          detail: "Checking a submission before acceptance.",
+          preview: true,
+        },
+      ]
+    : members.map((member) => memberFloorItem(member, tasks));
+
+  const working = preview
+    ? 2
+    : items.filter((item) => item.status === "working").length;
+  const reviewing = preview
+    ? 1
+    : items.filter((item) => item.status === "reviewing").length;
+  const waiting = preview
+    ? 0
+    : items.filter((item) => item.status === "waiting").length;
+
+  return `<div class="agent-floor-shell">
+    <div class="floor-toolbar">
+      <div>
+        <strong>${preview ? "See how a populated room moves" : "What every agent is doing right now"}</strong>
+        <p>${
+          preview
+            ? "Preview crew — these sample agents disappear as soon as real members join."
+            : "This view is folded from the same room log as the board and updates live."
+        }</p>
+      </div>
+      <span class="floor-mode">${preview ? "preview" : "live room"}</span>
+    </div>
+    <div class="agent-scene">
+      <div class="shared-core" aria-label="Shared Atrium board">
+        <span class="core-mark">A</span>
+        <strong>Shared board</strong>
+        <div class="core-counts">
+          <span>${working} working</span>
+          <span>${reviewing} reviewing</span>
+          <span>${waiting} waiting</span>
+        </div>
+      </div>
+      <div class="agent-stations">
+        ${items.map(renderAgentStation).join("")}
+      </div>
+    </div>
+  </div>`;
+}
+
 function renderRoster(room: Room): string {
   const members = room.roster();
   if (members.length === 0) return `<p class="empty">Nobody has joined yet.</p>`;
@@ -1084,7 +1587,7 @@ function renderLogLine(line: HistoryLine): string {
  * The client half of the live stream. It opens one EventSource and reads two
  * kinds of thing off it: the unnamed `message` events, which are log lines,
  * exactly as before; and a handful of *named* events — `board`, `roster`,
- * `artifacts`, `brief`, `meta`, `halted` — each carrying a pre-rendered,
+ * `agents`, `artifacts`, `brief`, `meta`, `halted` — each carrying a pre-rendered,
  * pre-escaped HTML fragment for the one region of the page that a board-
  * shaped event just changed. The client's job stays "dumb": drop the string
  * into the element with that id. All the judgment about *whether* something
@@ -1169,6 +1672,7 @@ function clientScript(fromSeq: number): string {
 
   src.addEventListener("board", function (e) { swap("board", JSON.parse(e.data)); });
   src.addEventListener("roster", function (e) { swap("roster", JSON.parse(e.data)); });
+  src.addEventListener("agents", function (e) { swap("agent-floor", JSON.parse(e.data)); });
   src.addEventListener("artifacts", function (e) { swap("artifacts", JSON.parse(e.data)); });
   src.addEventListener("brief", function (e) {
     var d = JSON.parse(e.data);
@@ -1216,6 +1720,7 @@ function renderRoomPage(room: Room): string {
     </div>
   </div>
   <nav class="room-nav">
+    <a href="#agent-floor-section">Agent floor</a>
     <a href="#brief-section">Brief</a>
     <a href="#board-section">Board</a>
     <a href="#members-section">Members</a>
@@ -1248,6 +1753,7 @@ function renderRoomPage(room: Room): string {
   </figure>
 </header>
 <div id="halted">${room.isHalted() ? HALTED_NOTE : ""}</div>
+<section id="agent-floor-section"><h2>Live agent floor</h2><div id="agent-floor">${renderAgentFloor(room, tasks)}</div></section>
 <section id="brief-section"><h2>Brief ${renderContextBudget(context)}</h2><div id="brief">${renderBrief(room, context)}</div></section>
 <section id="board-section"><h2>Board</h2>
   <div class="board-tools">
@@ -1770,6 +2276,21 @@ function numberParam(raw: string | null): number | undefined {
  * event types — leases, notes, cost reports — answer "no."
  */
 const REGION_EVENTS = {
+  agents: new Set<EventType>([
+    "member.joined",
+    "member.left",
+    "task.created",
+    "task.claimed",
+    "task.claim_renewed",
+    "task.released",
+    "task.blocked",
+    "task.unblocked",
+    "task.submitted",
+    "task.accepted",
+    "task.rejected",
+    "task.escalated",
+    "task.unescalated",
+  ]),
   board: new Set<EventType>([
     "task.created",
     "task.claimed",
@@ -1896,10 +2417,13 @@ function streamEvents(
     // from here down is the board catching up to what those lines just said,
     // and only the regions those specific event types can affect — a room
     // that only ever sees lease renewals and cost reports sends log lines
-    // and this one small counter, never a single board/roster/artifacts/brief
+    // and this one small counter, never a single agents/board/roster/artifacts/brief
     // re-render.
     const meta: Record<string, string> = { head: `log at #${last}` };
     const touched = regionsTouchedBy(fresh.map((line) => line.type));
+    if (touched.has("agents")) {
+      res.write(`event: agents\ndata: ${JSON.stringify(renderAgentFloor(room))}\n\n`);
+    }
     if (touched.has("roster")) {
       const n = room.roster().length;
       meta.members = `${n} member${n === 1 ? "" : "s"}`;
