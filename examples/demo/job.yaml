@@ -1,0 +1,52 @@
+# The job the demo runs. Seeded with:
+#
+#   atrium init ./demo-newsroom --from examples/demo/job.yaml
+#
+# This is examples/newsroom.yaml with one change: the last task's command
+# actually exists, because the demo copies check-draft.mjs into the room
+# before it runs. Acceptance commands run with the room as their working
+# directory, which is why the path is relative.
+
+name: newsroom
+
+context: |-
+  # Newsroom
+
+  Cover the Henley/Barrow merger for Friday's edition.
+
+  - 800 words, house style, no subheadings.
+  - Every factual claim needs a source an editor can open.
+  - Nobody signs off their own work. If you wrote the draft, you are not the
+    one who accepts the fact-check.
+
+tasks:
+  research:
+    title: Gather sources on the merger
+    description: |-
+      At least four independent sources, each with a working link. Put them in
+      sources.md, one per line, with a sentence on what each one supports.
+    acceptance: reviewer
+
+  draft:
+    title: Write the piece
+    description: |-
+      Write draft.md from sources.md. Do not introduce a claim that sources.md
+      does not already support — if you need one, put the task back and say so.
+    dependsOn: [research]
+    acceptance: reviewer
+
+  factcheck:
+    title: Verify every claim in the draft
+    description: |-
+      Read draft.md against sources.md. Write factcheck.md naming any sentence
+      that is not supported, rather than a general note about accuracy.
+    dependsOn: [draft]
+    acceptance: reviewer
+
+  signoff:
+    title: Check the draft against the brief
+    description: |-
+      Nothing to write. Handing this in runs the check, and its exit code
+      decides — no opinion involved.
+    dependsOn: [factcheck]
+    acceptance: { kind: command, command: "node .demo/check-draft.mjs", timeoutSeconds: 30 }

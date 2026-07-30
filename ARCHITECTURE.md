@@ -55,13 +55,13 @@ The honest state of the project as of 2026-07-30. 21.5k lines of TypeScript, 522
 | Single-file binary build | `scripts/build-binary.mjs`, `src/sea.ts` | |
 | End-to-end workflow test | `src/workflow.test.ts` | research → draft → review with a real rejection. |
 | YAML job declaration | `src/jobs.ts`, `src/yaml.ts` | `atrium init --from job.yaml`. Zero-dependency subset parser. §12.1 |
+| Runnable demo with reference workers | `examples/demo/`, `src/demo.test.ts` | `npm run demo`. Scripted MCP clients; doubles as a regression test. §12.1a |
 
 ### Not built
 
 | Capability | Status | Section |
 |---|---|---|
-| Reference worker under `examples/` | `[PLANNED]` — next | §12.1a |
-| `atrium plan` — proposed board from the brief | `[PLANNED]` | §12.2 |
+| `atrium plan` — proposed board from the brief | `[PLANNED]` — next | §12.2 |
 | `expectedOutput` contract on tasks | `[PLANNED]` | §12.3 |
 | Event stream for external observability | `[PLANNED]` | §12.4 |
 | `manager` role | `[PLANNED]` | §12.5 |
@@ -77,9 +77,9 @@ The honest state of the project as of 2026-07-30. 21.5k lines of TypeScript, 522
 
 ### Known gaps that are not features
 
-- **Not published to npm.** The README tells clients to run `atrium serve`, but the only working path today is clone → `npm install` → `npm run build` → `node dist/cli.js`. This is the single largest barrier to anyone using the project.
-- **No runnable demo.** The rejection loop is the differentiating idea and it is currently only visible to someone reading `src/workflow.test.ts`. §12.1 shipped the half of the fix that seeds a board from `examples/newsroom.yaml`; the reference worker that drives it is still missing.
-- **The runner has nothing to run.** `atrium run` shells out to operator-written worker commands that this repo does not ship, so the "make it actually go" path requires the user to first build the thing that uses it.
+- **Not published to npm.** The README tells clients to run `atrium serve`, but the only working path today is clone → `npm install` → `npm run build` → `node dist/cli.js`. Now that `npm run demo` works from a fresh clone, this is the last thing standing between a stranger and the project — and it is the single largest one.
+- ~~No runnable demo.~~ Fixed by §12.1 and §12.1a: `npm run demo`.
+- ~~The runner has nothing to run.~~ `examples/demo/worker.mjs` is a working `atrium run` worker.
 
 ---
 
@@ -330,11 +330,15 @@ Explicitly still cut: embeddings, remote or multi-machine Rooms, auth beyond a l
 
 **Definition of done for v0.1:** a stranger clones the repo and gets three agents to produce one reviewed document in under ten minutes, without reading the source.
 
-**This is not met.** Every mechanism it names exists and is tested, but a stranger cannot reach it: the package is not on npm, and there is no shipped job a person can run without first writing their own workers. `src/workflow.test.ts` proves the workflow to a reader of the test suite, which is not the same audience. §12.1 exists to close exactly this gap, and it is the reason it is first in the queue rather than the most interesting item.
+**Met, with one asterisk.** `npm run demo` takes a fresh clone to a finished job with a real rejection in it, in about ten seconds and without reading the source. The asterisk is "clones the repo": there is still no `npx atrium`, so the ten minutes assumes somebody already decided to clone.
 
 ### v0.3 target
 
 **Definition of done for v0.3:** a stranger runs one command against a fresh clone and watches an agent's work get rejected and sent back, without writing any configuration.
+
+**Met** by §12.1 and §12.1a. `npm run demo` seeds the board from a job file, runs the workers, and the draft comes back with a reason attached before it is accepted on the second attempt.
+
+What that leaves is the honest limit of it: the workers are scripted, so this demonstrates that the *coordination* works and says nothing about whether real agents coordinate well. That question needs §12.1a's `--model` mode, or somebody pointing a real agent at a room and reporting back. The second would be worth more.
 
 `[OPEN]` **Time budget.** This was scoped as a side project. Set a real cap in wall-clock hours and write it here. A number you have to look at is harder to blow through than a number you carry around in your head.
 
@@ -414,13 +418,29 @@ Everything is validated before the room is created, and a cycle is a load error 
 
 Still outstanding for the v0.3 definition of done: this seeds a board, but a stranger still needs a worker to point at it. That is §12.1a.
 
-### 12.1a Reference worker `[PLANNED]` — next
+### 12.1a Reference worker and the demo `[SHIPPED]`
 
-A worker under `examples/` that joins a room over MCP, claims what it can, does the work, and hands it in. Enough that `atrium init --from examples/newsroom.yaml` followed by `atrium run` shows a rejection landing, without the reader writing anything.
+`npm run demo` builds the project, seeds a room from `examples/demo/job.yaml`, and runs the newsroom job to completion — including a rejection that sends the draft back and a rework that fixes it. Nothing to configure, no key, no network.
 
-`[CONFIRMED]` It lives in `examples/`, not `src/`, and nothing in `src/` may import it. The line that keeps Atrium from becoming an agent framework by the back door (§10, open question 6) is that a reference worker is a *demonstration of the MCP interface*, the same as any third-party agent would be, and gets no privileged access. If it ever needs something the interface does not expose, that is a finding about the interface, not a reason to reach past it.
+Three processes under `examples/demo/`, all of them ordinary MCP clients:
 
-`[OPEN]` Whether it calls a real model. A worker that does makes the demo honest and makes running it cost money and require a key; one that does not is a scripted puppet that proves the plumbing and nothing about the idea. A middle option — scripted by default, real with `--model` — probably beats both, at the cost of being two things.
+| File | What it is |
+|---|---|
+| `mcp.mjs` | A hundred-line MCP client. Line-delimited JSON-RPC over `atrium serve`'s stdio; no SDK. |
+| `worker.mjs` | Claims the task the runner assigned it, writes artifacts, hands in. Launched by `atrium run`. |
+| `reviewer.mjs` | Reads what is waiting and accepts or rejects it. A different member, which the room enforces. |
+| `check-draft.mjs` | A `command` acceptance. Copied into the room, since acceptance commands run with the room as cwd. |
+| `run.mjs` | The driver. Alternates dispatch passes and review passes, and narrates. |
+
+`[CONFIRMED]` They live in `examples/`, not `src/`, and nothing in `src/` imports them. The line that keeps Atrium from becoming an agent framework by the back door (§10, open question 6) is that a reference worker is a *demonstration of the MCP interface*, the same as any third-party agent, with no privileged access. Writing them found no case where that was inconvenient, which is the useful result.
+
+`[CONFIRMED]` The workers are scripted, and the decision to keep them so was deliberate. They do not call a model: the prose is in the file, and the first draft carries a figure no source supports. What is *not* staged is the verdict — the reviewer applies a rule to the text (every number in the draft must appear in the sources) and the first draft fails it. Nobody told the reviewer to reject that draft.
+
+The argument for scripted over real is that this doubles as a regression test (`src/demo.test.ts`, 9 assertions). A demo nobody checks rots quietly, and the dangerous failure is not a crash — anyone notices a crash — but the rejection silently ceasing to happen while `npm run demo` still exits 0. The test asserts the *story*: work was handed in, turned down for a reason drawn from the text, came back changed, and was accepted by a different member. A model-backed worker would demonstrate more and could be relied on for less.
+
+`[OPEN]` Whether to add a `--model` mode later. It would make the demo honest about agent behaviour rather than only about the plumbing, at the cost of a key, a per-run charge, and a second code path. Not needed for the v0.3 goal, which is why it did not ship with this.
+
+**One finding worth recording.** A `command` acceptance is logged against the member that *submitted* the work, since that is who triggered the run, and only the phrase "via command" in the rendered line distinguishes it from a member's judgement. Anyone auditing "did somebody approve their own work" by actor alone gets a false positive. Nothing is wrong — no judgement was involved, the exit code decided — but the log leans on a phrase to carry that, and §12.4's event stream should expose the acceptance kind as a field rather than making a consumer parse prose for it.
 
 ### 12.2 `atrium plan` `[PLANNED]`
 

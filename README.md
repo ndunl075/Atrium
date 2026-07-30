@@ -110,6 +110,53 @@ To use another room:
 npm run dev -- ./my-room
 ```
 
+## See it work
+
+```sh
+npm install
+npm run demo
+```
+
+That builds the project, creates a room, and runs a four-task newsroom job to
+completion using the reference workers in `examples/demo/`. No API key, no
+network, about ten seconds.
+
+The part worth watching is round 2:
+
+```text
+[scout]  claimed "Write the piece"
+[scout]  wrote draft.md
+[scout]  handed in "Write the piece" — waiting on somebody else to accept it
+[editor] REJECTED "Write the piece" — "400" does not appear in sources.md, so
+         nothing supports it: "The merger is expected to result in around 400
+         job losses.". Cite it or take it out.
+
+[scout]  claimed "Write the piece" (attempt 2)
+[scout]  previous attempt was rejected: "400" does not appear in sources.md ...
+[scout]  wrote draft.md
+[editor] accepted "Write the piece"
+```
+
+`scout` did not get to decide its draft was finished. `editor` could not have
+accepted its own work either — the room refuses that outright, whatever role a
+member holds. And the rejection reason travelled through the board, not
+through a message: when `scout` picked the task back up, it read the reason
+out of the room.
+
+Afterwards the room is still there to inspect:
+
+```sh
+node dist/cli.js diff draft.md ./demo-newsroom   # what changed after the rejection
+node dist/cli.js log ./demo-newsroom             # everything that happened, in order
+node dist/cli.js watch ./demo-newsroom           # the same thing in a browser
+```
+
+The demo workers are scripted — they do not call a model. They prove the
+coordination works; they prove nothing about how well real agents behave in a
+room. The reviewer's rejection is not staged, though: it applies a rule to the
+text (every number in the draft must appear in the sources) and the first
+draft fails it.
+
 ## Quick start
 
 Create a room:

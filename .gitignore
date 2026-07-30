@@ -19,3 +19,6 @@ build/
 
 # Rooms created while trying things out by hand.
 demo-room/
+
+# The room "npm run demo" builds. Recreated on every run with --fresh.
+demo-newsroom/
