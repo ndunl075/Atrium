@@ -85,7 +85,13 @@ describe("one dispatch pass", () => {
   it("launches each assignment with room and task context", async () => {
     const room = tempRoom();
     const owner = room.join({ name: "owner", role: "human" }).member;
-    const task = createTask(room, owner.id, { title: "Write the brief" });
+    const task = createTask(room, owner.id, {
+      title: "Write the brief",
+      expectedOutput: {
+        description: "A two-paragraph brief.",
+        schema: { type: "object" },
+      },
+    });
     const launched: RunnerAssignment[] = [];
 
     const summary = await runRoomOnce(
@@ -98,6 +104,8 @@ describe("one dispatch pass", () => {
           expect(env.ATRIUM_ROOM).toBe(room.dir);
           expect(env.ATRIUM_TASK_ID).toBe(task.id);
           expect(env.ATRIUM_TASK_TITLE).toBe("Write the brief");
+          expect(env.ATRIUM_EXPECTED_OUTPUT).toBe("A two-paragraph brief.");
+          expect(env.ATRIUM_EXPECTED_OUTPUT_SCHEMA).toBe('{"type":"object"}');
           expect(env.ATRIUM_WORKER_NAME).toBe("codex");
           return 0;
         },

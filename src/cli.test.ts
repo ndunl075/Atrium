@@ -1723,6 +1723,43 @@ describe("task add", () => {
     });
   });
 
+  it("accepts an expected-output contract and JSON schema", () => {
+    const { dir } = tempRoom();
+    const code = cmdTaskAdd(
+      [
+        dir,
+        "--title",
+        "structured report",
+        "--expected-output",
+        "A report with a summary.",
+        "--expected-output-schema",
+        '{"type":"object","required":["summary"]}',
+      ],
+      sink(),
+    );
+
+    const board = sink();
+    cmdBoard(["--json", dir], board);
+    const tasks = JSON.parse(board.outLines.join("\n"));
+    expect(code).toBe(0);
+    expect(tasks[0].expectedOutput).toEqual({
+      description: "A report with a summary.",
+      schema: { type: "object", required: ["summary"] },
+    });
+  });
+
+  it("refuses an expected-output schema without prose", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+    const code = cmdTaskAdd(
+      [dir, "--title", "structured report", "--expected-output-schema", '{"type":"object"}'],
+      s,
+    );
+
+    expect(code).toBe(2);
+    expect(s.errLines.join("\n")).toContain("requires a non-empty --expected-output");
+  });
+
   it("refuses a nonsense --command-timeout with a message saying what is allowed", () => {
     const { dir } = tempRoom();
     const s = sink();

@@ -1953,6 +1953,16 @@ function renderTaskDetailPage(room: Room, taskId: TaskId): string {
     task.description.trim() === ""
       ? `<p class="empty">No description.</p>`
       : `<pre class="brief">${escapeHtml(task.description)}</pre>`;
+  const expectedOutput = task.expectedOutput
+    ? `<section><h2>Expected output</h2>
+        <pre class="brief">${escapeHtml(task.expectedOutput.description)}</pre>
+        ${
+          task.expectedOutput.schema !== undefined
+            ? `<pre>${escapeHtml(JSON.stringify(task.expectedOutput.schema, null, 2))}</pre>`
+            : ""
+        }
+      </section>`
+    : "";
 
   const dependencies =
     task.dependsOn.length === 0
@@ -1991,6 +2001,7 @@ function renderTaskDetailPage(room: Room, taskId: TaskId): string {
 </header>
 ${escalatedNote}
 <section><h2>Description</h2>${description}</section>
+${expectedOutput}
 <section><h2>Dependencies</h2>${dependencies}</section>
 <section><h2>Claim &amp; submission</h2>${renderClaimAndSubmission(room, task, nameOf)}</section>
 <section><h2>Rejection history${

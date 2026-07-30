@@ -37,7 +37,14 @@ import { Room } from "./room.js";
 import { searchArtifacts } from "./search.js";
 import { contentStateAt, diffArtifact, listVersions } from "./snapshots.js";
 import { PACKAGE_VERSION } from "./util.js";
-import type { Acceptance, EventType, Member, MemberRole, TaskId } from "./types.js";
+import type {
+  Acceptance,
+  EventType,
+  ExpectedOutput,
+  Member,
+  MemberRole,
+  TaskId,
+} from "./types.js";
 
 /** Newest first. An older client gets its own version echoed back. */
 const SUPPORTED_PROTOCOL_VERSIONS = [
@@ -197,6 +204,9 @@ export class RoomServer {
         return createTask(this.room, this.requireMember().id, {
           title: str(args, "title"),
           description: str(args, "description", ""),
+          ...(args["expected_output"] !== undefined
+            ? { expectedOutput: args["expected_output"] as ExpectedOutput }
+            : {}),
           dependsOn: strArray(args, "depends_on"),
           ...(args["acceptance"]
             ? { acceptance: args["acceptance"] as Acceptance }
@@ -736,6 +746,21 @@ const TOOLS: ToolDefinition[] = [
       properties: {
         title: { type: "string" },
         description: { type: "string" },
+        expected_output: {
+          type: "object",
+          description:
+            "The completion contract shown to workers and reviewers. It guides acceptance but never accepts work itself.",
+          properties: {
+            description: {
+              type: "string",
+              description: "Plain-language description of what finished work looks like.",
+            },
+            schema: {
+              description: "Optional JSON Schema object or boolean for structured output.",
+            },
+          },
+          required: ["description"],
+        },
         depends_on: {
           type: "array",
           items: { type: "string" },

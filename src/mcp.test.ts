@@ -185,6 +185,28 @@ describe("joining", () => {
   });
 });
 
+describe("task output contracts", () => {
+  it("carries expected_output through create_task and get_task", async () => {
+    const server = new RoomServer(tempRoom());
+    await call(server, "join", { name: "scout", role: "worker" });
+
+    const { data: created, isError } = await call(server, "create_task", {
+      title: "Write report",
+      expected_output: {
+        description: "A report with a summary field.",
+        schema: { type: "object", required: ["summary"] },
+      },
+    });
+    const { data: fetched } = await call(server, "get_task", { task_id: created.id });
+
+    expect(isError).toBe(false);
+    expect(fetched.expectedOutput).toEqual({
+      description: "A report with a summary field.",
+      schema: { type: "object", required: ["summary"] },
+    });
+  });
+});
+
 describe("a refusal comes back as a readable result, not a protocol error", () => {
   it("explains a task that somebody else already claimed", async () => {
     const room = tempRoom();

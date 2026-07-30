@@ -350,6 +350,24 @@ describe("diff pages", () => {
 });
 
 describe("task detail page", () => {
+  it("shows the task's expected-output contract", async () => {
+    const room = tempRoom();
+    const worker = room.join({ name: "scout", role: "worker" }).member;
+    const task = createTask(room, worker.id, {
+      title: "Draft the opening",
+      expectedOutput: {
+        description: "Two polished paragraphs.",
+        schema: { type: "string", minLength: 100 },
+      },
+    });
+
+    const { body } = await get(await start(room), `/task?id=${task.id}`);
+
+    expect(body).toContain("Expected output");
+    expect(body).toContain("Two polished paragraphs.");
+    expect(body).toContain("&quot;minLength&quot;: 100");
+  });
+
   it("shows a claimed task's holder and claim expiry", async () => {
     const room = tempRoom();
     const worker = room.join({ name: "scout", role: "worker" }).member;

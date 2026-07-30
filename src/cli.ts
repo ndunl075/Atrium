@@ -70,6 +70,7 @@ import { serveStdio } from "./mcp.js";
 import type {
   Acceptance,
   EventType,
+  ExpectedOutput,
   HistoryOptions,
   Job,
   Member,
@@ -2092,6 +2093,9 @@ Creates a task and puts it on the board. Prints the new task's id.
 Options:
   --title <title>            the task's title (required)
   --description <text>       longer description (default: empty)
+  --expected-output <text>   what finished work must look like
+  --expected-output-schema <json>
+                              optional JSON Schema for structured output
   --depends-on <id,id,...>   task ids that must be accepted before this one
   --acceptance <kind>        command, reviewer, human, or none (default: reviewer)
   --command <shell command>  required when --acceptance is command
@@ -2112,6 +2116,8 @@ export function cmdTaskAdd(argv: string[], sink: Sink): number {
       help: { type: "boolean", short: "h" },
       title: { type: "string" },
       description: { type: "string" },
+      "expected-output": { type: "string" },
+      "expected-output-schema": { type: "string" },
       "depends-on": { type: "string" },
       acceptance: { type: "string" },
       command: { type: "string" },
@@ -2131,6 +2137,12 @@ export function cmdTaskAdd(argv: string[], sink: Sink): number {
     values["command-timeout"],
   );
   if (!acceptance.ok) return 2;
+  const expectedOutput = parseExpectedOutputFlags(
+    sink,
+    values["expected-output"],
+    values["expected-output-schema"],
+  );
+  if (!expectedOutput.ok) return 2;
 
   const dependsOn = (values["depends-on"] ?? "")
     .split(",")
@@ -2144,6 +2156,9 @@ export function cmdTaskAdd(argv: string[], sink: Sink): number {
     const task = createTask(room, actorId, {
       title: values.title ?? "",
       description: values.description ?? "",
+      ...(expectedOutput.value !== undefined
+        ? { expectedOutput: expectedOutput.value }
+        : {}),
       dependsOn,
       acceptance: acceptance.value,
     });
@@ -2152,6 +2167,45 @@ export function cmdTaskAdd(argv: string[], sink: Sink): number {
   } finally {
     room.close();
   }
+}
+
+function parseExpectedOutputFlags(
+  sink: Sink,
+  description: string | undefined,
+  schemaText: string | undefined,
+): { ok: true; value?: ExpectedOutput } | { ok: false } {
+  if (description === undefined && schemaText === undefined) return { ok: true };
+  if (description === undefined || description.trim() === "") {
+    sink.err("--expected-output-schema requires a non-empty --expected-output description.");
+    return { ok: false };
+  }
+
+  if (schemaText === undefined) {
+    return { ok: true, value: { description: description.trim() } };
+  }
+
+  let schema: unknown;
+  try {
+    schema = JSON.parse(schemaText);
+  } catch {
+    sink.err("--expected-output-schema must be valid JSON.");
+    return { ok: false };
+  }
+  if (
+    schema !== true &&
+    schema !== false &&
+    (typeof schema !== "object" || schema === null || Array.isArray(schema))
+  ) {
+    sink.err("--expected-output-schema must be a JSON object or boolean.");
+    return { ok: false };
+  }
+  return {
+    ok: true,
+    value: {
+      description: description.trim(),
+      schema: schema as boolean | Record<string, unknown>,
+    },
+  };
 }
 
 const TASK_SHOW_HELP = `Usage: atrium task show <id> <room>
@@ -2215,6 +2269,12 @@ export function cmdTaskShow(argv: string[], sink: Sink): number {
         (task.escalated ? " (escalated — needs a human to restart it)" : ""),
     );
     sink.out(`  acceptance: ${acceptanceLabel(task.acceptance)}`);
+    if (task.expectedOutput) {
+      sink.out(`  expected output: ${task.expectedOutput.description}`);
+      if (task.expectedOutput.schema !== undefined) {
+        sink.out(`  expected output schema: ${JSON.stringify(task.expectedOutput.schema)}`);
+      }
+    }
     sink.out(
       `  depends on: ${task.dependsOn.length > 0 ? task.dependsOn.join(", ") : "(none)"}` +
         (unmet.length > 0 ? ` — unmet: ${unmet.join(", ")}` : ""),
@@ -2773,6 +2833,8 @@ slots. Each command receives its assignment in environment variables:
   ATRIUM_TASK_ID
   ATRIUM_TASK_TITLE
   ATRIUM_TASK_DESCRIPTION
+  ATRIUM_EXPECTED_OUTPUT          (when the task declares one)
+  ATRIUM_EXPECTED_OUTPUT_SCHEMA   (when the contract includes a schema)
   ATRIUM_WORKER_NAME
 
 The worker must still join and claim the task through Atrium. The runner never

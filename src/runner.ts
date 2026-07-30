@@ -166,6 +166,18 @@ export function workerEnvironment(
     ATRIUM_TASK_ID: assignment.task.id,
     ATRIUM_TASK_TITLE: assignment.task.title,
     ATRIUM_TASK_DESCRIPTION: assignment.task.description,
+    ...(assignment.task.expectedOutput !== undefined
+      ? {
+          ATRIUM_EXPECTED_OUTPUT: assignment.task.expectedOutput.description,
+          ...(assignment.task.expectedOutput.schema !== undefined
+            ? {
+                ATRIUM_EXPECTED_OUTPUT_SCHEMA: JSON.stringify(
+                  assignment.task.expectedOutput.schema,
+                ),
+              }
+            : {}),
+        }
+      : {}),
     ATRIUM_WORKER_NAME: assignment.worker.name,
   };
 }

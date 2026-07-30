@@ -443,6 +443,29 @@ describe("runAcceptanceCommand", () => {
     expect(result.output).toContain("truncated");
   });
 
+  it("makes the expected-output contract available to the command", async () => {
+    const room = tempRoom();
+    const task = {
+      ...readTaskShapeStub(),
+      expectedOutput: {
+        description: "A JSON object with a summary.",
+        schema: { type: "object", required: ["summary"] },
+      },
+      acceptance: {
+        kind: "command",
+        command:
+          "node -e \"process.stdout.write(process.env.ATRIUM_EXPECTED_OUTPUT + '|' + process.env.ATRIUM_EXPECTED_OUTPUT_SCHEMA)\"",
+      } as const,
+    };
+
+    const result = await runAcceptanceCommand(room, task, 5_000);
+
+    expect(result.ok).toBe(true);
+    expect(result.output).toBe(
+      'A JSON object with a summary.|{"type":"object","required":["summary"]}',
+    );
+  });
+
   it("refuses to run a non-command task", async () => {
     const room = tempRoom();
     const task = { ...readTaskShapeStub(), acceptance: { kind: "reviewer" } as const };

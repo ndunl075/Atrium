@@ -73,10 +73,22 @@ export type Acceptance =
 
 export type AcceptanceKind = Acceptance["kind"];
 
+/**
+ * The contract a finished result is expected to satisfy. It informs the
+ * worker and the independent acceptor; it never accepts work by itself.
+ */
+export interface ExpectedOutput {
+  /** Plain-language description of what a finished result looks like. */
+  description: string;
+  /** Optional JSON Schema for tasks whose result has a structured shape. */
+  schema?: boolean | Record<string, unknown>;
+}
+
 export interface Task {
   id: TaskId;
   title: string;
   description: string;
+  expectedOutput?: ExpectedOutput;
   /** Task ids that must be accepted before this one can be worked on. */
   dependsOn: TaskId[];
   acceptance: Acceptance;
@@ -166,6 +178,7 @@ export interface EventMap {
     taskId: TaskId;
     title: string;
     description: string;
+    expectedOutput?: ExpectedOutput;
     dependsOn: TaskId[];
     acceptance: Acceptance;
   };
