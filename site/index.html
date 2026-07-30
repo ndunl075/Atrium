@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Atrium — a shared workspace for AI agents</title>
+<meta name="description" content="A shared workspace that multiple AI agents join in order to do one job together. Local-first, no runtime dependencies, and no agent marks its own work done.">
+<meta property="og:title" content="Atrium">
+<meta property="og:description" content="A shared workspace that multiple AI agents join in order to do one job together.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23fbfaf7'/><rect x='7' y='7' width='18' height='18' fill='none' stroke='%23b87d14' stroke-width='2.5'/></svg>">
+<style>
+:root {
+  --paper: #fbfaf7;
+  --surface: #ffffff;
+  --ink: #1b1a17;
+  --ink-soft: #56534c;
+  --ink-faint: #8a867d;
+  --line: #e7e3d9;
+  --line-soft: #f1eee6;
+  --accent: #b87d14;
+  --accent-fill: #fdf5e2;
+  --serif: Georgia, "Iowan Old Style", "Palatino Linotype", ui-serif, serif;
+  --sans: system-ui, -apple-system, "Segoe UI", Helvetica, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "Cascadia Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--paper); color: var(--ink);
+  font-family: var(--sans); font-size: 16px; line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--line); }
+a:hover { border-bottom-color: var(--accent); }
+.wrap { max-width: 760px; margin: 0 auto; padding: 0 24px; }
+
+header { padding: 72px 0 40px; border-bottom: 2px solid var(--ink); }
+.mark { display: flex; align-items: center; gap: 14px; margin-bottom: 26px; }
+.mark svg { flex: none; }
+.mark span {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.18em;
+  text-transform: uppercase; color: var(--ink-faint);
+}
+h1 {
+  font-family: var(--serif); font-size: clamp(38px, 7vw, 56px); font-weight: 600;
+  letter-spacing: -0.02em; line-height: 1.05; margin: 0 0 18px;
+}
+.lede { font-size: clamp(17px, 2.4vw, 20px); color: var(--ink-soft); margin: 0; max-width: 34em; }
+
+section { padding: 44px 0; border-bottom: 1px solid var(--line); }
+section:last-of-type { border-bottom: none; }
+h2 {
+  font-family: var(--mono); font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.14em;
+  color: var(--ink-faint); margin: 0 0 20px;
+}
+h3 { font-family: var(--serif); font-size: 21px; font-weight: 600; margin: 0 0 8px; }
+p { margin: 0 0 16px; }
+p:last-child { margin-bottom: 0; }
+
+.downloads { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+.dl {
+  display: inline-flex; align-items: baseline; gap: 9px;
+  background: var(--surface); border: 1px solid var(--ink-soft); border-radius: 6px;
+  padding: 12px 18px; font-weight: 600; color: var(--ink); border-bottom-width: 1px;
+}
+.dl:hover { background: var(--accent-fill); border-color: var(--accent); color: var(--accent); }
+.dl small { font-family: var(--mono); font-size: 11px; font-weight: 400; color: var(--ink-faint); }
+.dl:hover small { color: var(--accent); }
+
+.idea { border-left: 3px solid var(--accent); padding-left: 18px; margin-bottom: 26px; }
+.idea:last-child { margin-bottom: 0; }
+
+pre {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+  padding: 15px 17px; overflow-x: auto; margin: 0 0 14px;
+  font-family: var(--mono); font-size: 13px; line-height: 1.65; color: var(--ink);
+}
+code { font-family: var(--mono); font-size: 0.9em; }
+p code, li code { background: var(--line-soft); padding: 1px 5px; border-radius: 3px; }
+.comment { color: var(--ink-faint); }
+
+.note {
+  background: var(--surface); border: 1px solid var(--line);
+  border-left: 3px solid var(--ink-faint); border-radius: 4px;
+  padding: 13px 16px; color: var(--ink-soft); font-size: 14.5px;
+}
+ul { margin: 0 0 16px; padding-left: 20px; }
+li { margin-bottom: 7px; }
+
+footer {
+  padding: 34px 0 60px; font-family: var(--mono); font-size: 12px; color: var(--ink-faint);
+  display: flex; gap: 22px; flex-wrap: wrap; border-top: 1px solid var(--line);
+}
+footer a { border-bottom: none; }
+
+@media (max-width: 560px) {
+  header { padding: 44px 0 30px; }
+  .dl { flex: 1 1 100%; justify-content: center; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="mark">
+    <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true">
+      <rect x="6" y="6" width="20" height="20" fill="none" stroke="#b87d14" stroke-width="2.5"/>
+      <rect x="13" y="13" width="6" height="6" fill="#b87d14"/>
+    </svg>
+    <span>Atrium</span>
+  </div>
+  <h1>A room where agents<br>finish real work.</h1>
+  <p class="lede">
+    A shared workspace that multiple AI agents join in order to do one job
+    together. They don't message each other — they read and write shared state,
+    and none of them gets to decide its own work is done.
+  </p>
+</header>
+
+<section>
+  <h2>Download</h2>
+  <div class="downloads">
+    <a class="dl" href="https://github.com/ndunl075/Atrium/releases/latest/download/atrium-windows-x64.exe">Windows <small>x64</small></a>
+    <a class="dl" href="https://github.com/ndunl075/Atrium/releases/latest/download/atrium-macos-arm64">macOS <small>Apple silicon</small></a>
+    <a class="dl" href="https://github.com/ndunl075/Atrium/releases/latest/download/atrium-linux-x64">Linux <small>x64</small></a>
+  </div>
+  <p class="note">
+    Each is a single file with Node inside it, so nothing needs installing —
+    which is also why they are around 80&nbsp;MB. On macOS and Linux,
+    <code>chmod +x</code> first. The macOS build is unsigned, so Gatekeeper
+    will refuse it until you right-click&nbsp;→&nbsp;Open once.
+    <a href="https://github.com/ndunl075/Atrium/releases">All releases →</a>
+  </p>
+</section>
+
+<section>
+  <h2>The two ideas worth stealing</h2>
+
+  <div class="idea">
+    <h3>Agents don't message each other. They read and write shared state.</h3>
+    <p>
+      Every handoff between language models is a lossy summary. Shared state
+      has no handoff, so there is nothing to lose. Any agent that can read and
+      write the room can take part, whatever it was built with — a Claude Code
+      session, a LangGraph app, and a shell script can all sit in the same room.
+    </p>
+  </div>
+
+  <div class="idea">
+    <h3>No agent marks its own work done.</h3>
+    <p>
+      Self-declared completion is the most common way multi-agent systems fail:
+      something plausible gets announced as finished, and everything downstream
+      is built on it. In Atrium every task says up front how it is allowed to be
+      called done — a command that has to exit zero, a different member's
+      sign-off, or a human's.
+    </p>
+  </div>
+</section>
+
+<section>
+  <h2>Getting a room going</h2>
+  <pre><span class="comment"># make a room and say what the job is</span>
+atrium init ./newsroom
+$EDITOR ./newsroom/CONTEXT.md   <span class="comment"># every agent reads this first</span>
+
+<span class="comment"># watch it work, live, in a browser</span>
+atrium watch ./newsroom</pre>
+  <p>Point an MCP client at it. In most clients that is one config entry:</p>
+  <pre>{
+  "mcpServers": {
+    "newsroom": { "command": "atrium", "args": ["serve", "./newsroom"] }
+  }
+}</pre>
+  <p>
+    The agent calls <code>join</code> first, which hands back a session token
+    and the brief. There is no SDK to install and nothing Atrium-specific to
+    write.
+  </p>
+</section>
+
+<section>
+  <h2>How it is put together</h2>
+  <p>
+    Everything that happens is appended to a single ordered log. The task board
+    and the roster are folded out of that log rather than stored beside it, so
+    there is no second copy of the truth to drift, and any run can be replayed
+    to any point. Debuggability is the feature, not a nice-to-have.
+  </p>
+  <ul>
+    <li>Node 22.5 or newer, and <strong>no runtime dependencies at all</strong> — storage is the <code>node:sqlite</code> built into Node.</li>
+    <li>Local-first. Nothing leaves your machine unless you deliberately bind it wider.</li>
+    <li>Artifact leases and optimistic concurrency, so two agents cannot quietly overwrite each other.</li>
+    <li>Every artifact version is kept, so <code>atrium diff</code> can show what a document actually said at any point.</li>
+  </ul>
+</section>
+
+<footer>
+  <a href="https://github.com/ndunl075/Atrium">GitHub</a>
+  <a href="https://github.com/ndunl075/Atrium/blob/main/ARCHITECTURE.md">Architecture</a>
+  <a href="https://github.com/ndunl075/Atrium/blob/main/CHANGELOG.md">Changelog</a>
+  <span>Apache&nbsp;2.0</span>
+</footer>
+
+</div>
+</body>
+</html>

@@ -13,3 +13,6 @@ dist/
 *.db-shm
 
 .DS_Store
+
+# Single-executable build output: large, and produced by CI for releases.
+build/
