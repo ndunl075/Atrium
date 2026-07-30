@@ -27,6 +27,7 @@ import { Room } from "./room.js";
 import { foldTasks, isClaimable } from "./tasks.js";
 import type {
   Acceptance,
+  ExpectedOutput,
   MemberId,
   Task,
   TaskId,
@@ -53,6 +54,7 @@ const EPOCH = new Date(0).toISOString();
 export interface CreateTaskInput {
   title: string;
   description?: string;
+  expectedOutput?: ExpectedOutput;
   dependsOn?: TaskId[];
   acceptance?: Acceptance;
 }
@@ -89,6 +91,7 @@ export function createTask(
   const title = input.title?.trim();
   if (!title) throw new InvalidError('A task needs a non-empty "title".');
 
+  const expectedOutput = normalizeExpectedOutput(input.expectedOutput);
   const acceptance: Acceptance = input.acceptance ?? { kind: "reviewer" };
   if (acceptance.kind === "none" && !room.config.allowUncheckedAcceptance) {
     throw new InvalidError(
@@ -144,12 +147,47 @@ export function createTask(
       taskId,
       title,
       description: input.description ?? "",
+      ...(expectedOutput !== undefined ? { expectedOutput } : {}),
       dependsOn,
       acceptance,
     });
 
     return requireTask(readBoard(room), taskId);
   });
+}
+
+function normalizeExpectedOutput(value: ExpectedOutput | undefined): ExpectedOutput | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new InvalidError('"expectedOutput" must contain a description and optional JSON schema.');
+  }
+
+  const description = value.description?.trim();
+  if (!description) {
+    throw new InvalidError('"expectedOutput.description" must be non-empty text.');
+  }
+
+  if (
+    value.schema !== undefined &&
+    value.schema !== true &&
+    value.schema !== false &&
+    (typeof value.schema !== "object" || value.schema === null || Array.isArray(value.schema))
+  ) {
+    throw new InvalidError('"expectedOutput.schema" must be a JSON Schema object or boolean.');
+  }
+
+  if (value.schema !== undefined) {
+    try {
+      JSON.stringify(value.schema);
+    } catch {
+      throw new InvalidError('"expectedOutput.schema" must be JSON-serializable.');
+    }
+  }
+
+  return {
+    description,
+    ...(value.schema !== undefined ? { schema: value.schema } : {}),
+  };
 }
 
 export function listTasks(room: Room, filter: TaskFilter = {}): Task[] {

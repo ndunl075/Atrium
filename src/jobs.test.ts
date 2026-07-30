@@ -74,6 +74,33 @@ describe("parseJob", () => {
     expect(job.tasks[1]!.dependsOn).toEqual(["a"]);
   });
 
+  it("reads expectedOutput prose and an optional JSON schema", () => {
+    const job = parseJob(
+      [
+        "tasks:",
+        "  report:",
+        "    title: Write report",
+        "    expectedOutput:",
+        "      description: A structured report.",
+        "      schema: { type: object, required: [summary] }",
+      ].join("\n"),
+    );
+
+    expect(job.tasks[0]!.expectedOutput).toEqual({
+      description: "A structured report.",
+      schema: { type: "object", required: ["summary"] },
+    });
+  });
+
+  it("accepts expectedOutput prose as shorthand", () => {
+    const job = parseJob(
+      ["tasks:", "  report:", "    title: Write report", "    expectedOutput: A final report."].join(
+        "\n",
+      ),
+    );
+    expect(job.tasks[0]!.expectedOutput).toEqual({ description: "A final report." });
+  });
+
   describe("acceptance", () => {
     it("reads the shorthand form", () => {
       const job = parseJob(

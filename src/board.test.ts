@@ -77,6 +77,44 @@ describe("createTask", () => {
     );
   });
 
+  it("records an expected-output contract with an optional JSON schema", () => {
+    const room = tempRoom();
+    const worker = room.join({ name: "scout", role: "worker" }).member;
+
+    const task = createTask(room, worker.id, {
+      title: "Draft the memo",
+      expectedOutput: {
+        description: "A concise memo with a recommendation.",
+        schema: {
+          type: "object",
+          required: ["recommendation"],
+          properties: { recommendation: { type: "string" } },
+        },
+      },
+    });
+
+    expect(task.expectedOutput).toEqual({
+      description: "A concise memo with a recommendation.",
+      schema: {
+        type: "object",
+        required: ["recommendation"],
+        properties: { recommendation: { type: "string" } },
+      },
+    });
+  });
+
+  it("refuses an expected-output contract without prose", () => {
+    const room = tempRoom();
+    const worker = room.join({ name: "scout", role: "worker" }).member;
+
+    expect(() =>
+      createTask(room, worker.id, {
+        title: "Draft",
+        expectedOutput: { description: "   " },
+      }),
+    ).toThrow(/expectedOutput\.description/);
+  });
+
   it("requires every dependency to already exist", () => {
     const room = tempRoom();
     const worker = room.join({ name: "scout", role: "worker" }).member;

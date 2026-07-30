@@ -332,6 +332,9 @@ function escalateIfNeeded(room: Room, task: Task, entries: PendingEvent[]): void
  * cwd. A failing or hanging command is a normal result, never a thrown error:
  * the caller decides what a bad exit code means.
  *
+ * When the task declares an expected-output contract, the command receives it
+ * as ATRIUM_EXPECTED_OUTPUT and (when present) ATRIUM_EXPECTED_OUTPUT_SCHEMA.
+ *
  * `timeoutMs`, when given, overrides both the task's own `timeoutSeconds` and
  * the room's `commandTimeoutSeconds` — this is for callers (tests, mainly)
  * that want to force a specific limit regardless of either setting. Leave it
@@ -355,7 +358,7 @@ export async function runAcceptanceCommand(
       ? { ms: timeoutMs, seconds: timeoutMs / 1000, origin: "override" }
       : resolveTimeout(room, task);
 
-  return runShell(task.acceptance.command, room.dir, timeout);
+  return runShell(task.acceptance.command, room.dir, timeout, task);
 }
 
 /** Every task currently waiting on somebody to call `reviewTask`. */
@@ -423,6 +426,7 @@ function runShell(
   command: string,
   cwd: string,
   timeout: ResolvedTimeout,
+  task: Task,
 ): Promise<AcceptanceCommandResult> {
   return new Promise((resolve) => {
     // `detached` on POSIX puts the shell in its own process group, which is
@@ -432,6 +436,18 @@ function runShell(
     const child = spawn(command, {
       cwd,
       shell: true,
+      env: {
+        ...process.env,
+        ATRIUM_TASK_ID: task.id,
+        ...(task.expectedOutput !== undefined
+          ? {
+              ATRIUM_EXPECTED_OUTPUT: task.expectedOutput.description,
+              ...(task.expectedOutput.schema !== undefined
+                ? { ATRIUM_EXPECTED_OUTPUT_SCHEMA: JSON.stringify(task.expectedOutput.schema) }
+                : {}),
+            }
+          : {}),
+      },
       ...(process.platform === "win32" ? {} : { detached: true }),
     });
 

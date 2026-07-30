@@ -31,7 +31,13 @@ import { createTask } from "./board.js";
 import { recordBrief } from "./context.js";
 import { InvalidError } from "./errors.js";
 import type { Room } from "./room.js";
-import type { Acceptance, AcceptanceKind, MemberId, TaskId } from "./types.js";
+import type {
+  Acceptance,
+  AcceptanceKind,
+  ExpectedOutput,
+  MemberId,
+  TaskId,
+} from "./types.js";
 import { parseYaml, type YamlValue } from "./yaml.js";
 
 /** One task as written in the file, before it has an id. */
@@ -40,6 +46,7 @@ export interface JobTask {
   key: string;
   title: string;
   description?: string;
+  expectedOutput?: ExpectedOutput;
   /** Other job keys, not task ids — the file is written before ids exist. */
   dependsOn: string[];
   acceptance?: Acceptance;
@@ -62,7 +69,14 @@ export interface AppliedJob {
 }
 
 const TOP_LEVEL_KEYS = new Set(["name", "context", "tasks"]);
-const TASK_KEYS = new Set(["title", "description", "dependsOn", "acceptance"]);
+const TASK_KEYS = new Set([
+  "title",
+  "description",
+  "expectedOutput",
+  "dependsOn",
+  "acceptance",
+]);
+const EXPECTED_OUTPUT_KEYS = new Set(["description", "schema"]);
 const ACCEPTANCE_KINDS: ReadonlySet<string> = new Set([
   "command",
   "reviewer",
@@ -160,6 +174,7 @@ function parseTask(key: string, value: YamlValue, source: string): JobTask {
   }
 
   const description = optionalString(value["description"], `task "${key}" description`, source);
+  const expectedOutput = parseExpectedOutput(value["expectedOutput"], key, source);
   const dependsOn = parseDependsOn(value["dependsOn"], where);
   const acceptance = parseAcceptance(value["acceptance"], where);
 
@@ -167,8 +182,57 @@ function parseTask(key: string, value: YamlValue, source: string): JobTask {
     key,
     title: title.trim(),
     ...(description !== undefined ? { description } : {}),
+    ...(expectedOutput !== undefined ? { expectedOutput } : {}),
     dependsOn,
     ...(acceptance !== undefined ? { acceptance } : {}),
+  };
+}
+
+function parseExpectedOutput(
+  value: YamlValue | undefined,
+  taskKey: string,
+  source: string,
+): ExpectedOutput | undefined {
+  const where = `${source}: task "${taskKey}"`;
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string") {
+    if (value.trim() === "") {
+      throw new InvalidError(`${where}: expectedOutput must be non-empty text.`);
+    }
+    return { description: value.trim() };
+  }
+  if (!isRecord(value)) {
+    throw new InvalidError(
+      `${where}: expectedOutput must be text, or a mapping with "description" and optional "schema".`,
+    );
+  }
+
+  rejectUnknownKeys(value, EXPECTED_OUTPUT_KEYS, source, `task "${taskKey}" expectedOutput`);
+  const description = optionalString(
+    value["description"],
+    `task "${taskKey}" expectedOutput description`,
+    source,
+  );
+  if (description === undefined || description.trim() === "") {
+    throw new InvalidError(`${where}: expectedOutput needs a non-empty "description".`);
+  }
+
+  const schema = value["schema"];
+  if (
+    schema !== undefined &&
+    schema !== null &&
+    schema !== true &&
+    schema !== false &&
+    !isRecord(schema)
+  ) {
+    throw new InvalidError(`${where}: expectedOutput schema must be a JSON Schema mapping or boolean.`);
+  }
+
+  return {
+    description: description.trim(),
+    ...(schema !== undefined && schema !== null
+      ? { schema: schema as boolean | Record<string, unknown> }
+      : {}),
   };
 }
 
@@ -348,6 +412,7 @@ export function applyJob(room: Room, actorId: MemberId, job: Job): AppliedJob {
     const created = createTask(room, actorId, {
       title: task.title,
       ...(task.description !== undefined ? { description: task.description } : {}),
+      ...(task.expectedOutput !== undefined ? { expectedOutput: task.expectedOutput } : {}),
       dependsOn: task.dependsOn.map((key) => {
         const id = taskIds.get(key);
         // creationOrder guarantees this, so reaching it means the ordering
