@@ -118,6 +118,20 @@ describe("serveWatch", () => {
     expect(body).toContain('href="#board-section"');
     expect(body).toContain('class="workspace"');
     expect(body).toContain("room notebook");
+    expect(body).toContain('class="room-visual"');
+    expect(body).toContain('src="/assets/atrium-courtyard.jpg"');
+    expect(body).toContain("Agents work apart");
+  });
+
+  it("serves the courtyard artwork locally as a real JPEG", async () => {
+    const handle = await start(tempRoom());
+    const res = await fetch(new URL("/assets/atrium-courtyard.jpg", handle.url));
+    const bytes = new Uint8Array(await res.arrayBuffer());
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/jpeg");
+    expect(bytes.byteLength).toBeGreaterThan(100_000);
+    expect([...bytes.slice(0, 3)]).toEqual([0xff, 0xd8, 0xff]);
   });
 
   it("escapes member and task text that could otherwise inject markup", async () => {

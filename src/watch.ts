@@ -28,16 +28,19 @@
  * than dressed up: anything running on the machine can read the room through
  * this port while it is open.
  *
- * The page is self-contained. All CSS and JS are inline and no asset is
- * fetched from anywhere, so it renders identically on a machine with no
- * network. That is partly principle — this project's dependency budget is zero
- * and a CDN link is a dependency wearing a disguise — and partly the plain
- * observation that a tool for watching local work should not need the internet
- * to draw itself.
+ * The page is self-contained apart from one project-owned illustration served
+ * by this same local process. It fetches nothing from the internet, so it
+ * still works offline. That is partly principle — this project's dependency
+ * budget is zero and a CDN link is a dependency wearing a disguise — and
+ * partly the plain observation that a tool for watching local work should not
+ * need the internet to draw itself.
  */
 
+import { existsSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { listArtifacts } from "./artifacts.js";
 import { getTask, listTasks } from "./board.js";
@@ -75,6 +78,29 @@ const DEFAULT_POLL_MS = 1000;
 
 /** Log lines shown on first paint. The stream carries everything after. */
 const INITIAL_LOG_LINES = 200;
+
+const COURTYARD_ASSET_PATH = "/assets/atrium-courtyard.jpg";
+
+/**
+ * npm installs keep assets beside dist/, while source runs keep them beside
+ * src/. A standalone binary has neither; it gets a CSS fallback instead of a
+ * broken image.
+ */
+function loadCourtyardArt(): Buffer | undefined {
+  const candidates: string[] = [resolve(process.cwd(), "assets", "atrium-courtyard.jpg")];
+  const moduleUrl: string | undefined = import.meta?.url;
+  if (typeof moduleUrl === "string") {
+    candidates.unshift(
+      resolve(dirname(fileURLToPath(moduleUrl)), "..", "assets", "atrium-courtyard.jpg"),
+    );
+  }
+  for (const path of candidates) {
+    if (existsSync(path)) return readFileSync(path);
+  }
+  return undefined;
+}
+
+const COURTYARD_ART = loadCourtyardArt();
 
 // ---------------------------------------------------------------------------
 // Escaping
@@ -464,6 +490,85 @@ header.masthead {
   box-shadow: var(--shadow);
 }
 
+.room-masthead {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 0.86fr);
+  gap: 30px;
+  align-items: center;
+  min-height: 340px;
+}
+
+.masthead-copy {
+  position: relative;
+  z-index: 2;
+  min-width: 0;
+}
+
+.masthead-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 15px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.masthead-kicker::before {
+  content: "";
+  width: 28px;
+  height: 2px;
+  background: var(--ink);
+}
+
+.room-visual {
+  position: relative;
+  z-index: 2;
+  min-width: 0;
+  margin: 0;
+  transform: rotate(1.2deg);
+}
+
+.room-visual img,
+.courtyard-fallback {
+  display: block;
+  width: 100%;
+  aspect-ratio: 3 / 2;
+  object-fit: cover;
+  background: #ead99d;
+  border: 1.5px solid var(--ink);
+  border-radius: 18px 18px 6px 18px;
+  box-shadow: 5px 5px 0 var(--ink);
+}
+
+.room-visual figcaption {
+  position: absolute;
+  right: -8px;
+  bottom: -13px;
+  max-width: 220px;
+  padding: 8px 10px;
+  color: #fffdf7;
+  background: var(--ink);
+  border-radius: 10px 10px 3px 10px;
+  font-family: var(--mono);
+  font-size: 9px;
+  line-height: 1.35;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  transform: rotate(-2deg);
+}
+
+.courtyard-fallback {
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 50%, var(--ink) 0 11%, transparent 11.5%),
+    radial-gradient(circle at 50% 50%, transparent 0 24%, var(--ink) 24.5% 25.5%, transparent 26%),
+    conic-gradient(from 15deg, #e37a2f, var(--sun), #7e9357, #17324d, #e37a2f);
+}
+
 header.masthead::after {
   content: "";
   position: absolute;
@@ -745,6 +850,10 @@ button:hover {
   }
   .room-nav a { flex: 0 0 auto; padding: 8px 10px; }
   .room-nav a::before, .rail-note { display: none; }
+  .room-masthead {
+    grid-template-columns: minmax(0, 1fr) minmax(260px, 0.8fr);
+    min-height: 0;
+  }
 }
 
 @media (max-width: 640px) {
@@ -758,6 +867,9 @@ button:hover {
   .card { overflow-x: auto; }
   #log li { display: grid; grid-template-columns: 42px 1fr; }
   #log .line { grid-column: 1 / -1; padding-left: 0; }
+  .room-masthead { grid-template-columns: 1fr; gap: 22px; }
+  .room-visual { transform: none; }
+  .room-visual figcaption { right: 8px; }
 }
 `;
 
@@ -1113,16 +1225,27 @@ function renderRoomPage(room: Room): string {
   <div class="rail-note"><strong>Read-only view</strong>This notebook mirrors the room as it changes. Use the CLI or MCP tools to act.</div>
 </aside>
 <main class="workspace" id="main-content">
-<header class="masthead">
-  <h1>${escapeHtml(config.name)}</h1>
-  <div class="meta">
-    <span>${escapeHtml(config.id)}</span>
-    <span id="hdr-members">${room.roster().length} member${room.roster().length === 1 ? "" : "s"}</span>
-    <span id="hdr-tasks">${tasks.length} task${tasks.length === 1 ? "" : "s"}</span>
-    <span id="hdr-tokens">${context.tokens}/${context.ceiling} context tokens</span>
-    <span id="hdr-head">log at #${head}</span>
-    <span id="status" class="live">live</span>
+<header class="masthead room-masthead">
+  <div class="masthead-copy">
+    <div class="masthead-kicker">Shared room, one source of truth</div>
+    <h1>${escapeHtml(config.name)}</h1>
+    <div class="meta">
+      <span>${escapeHtml(config.id)}</span>
+      <span id="hdr-members">${room.roster().length} member${room.roster().length === 1 ? "" : "s"}</span>
+      <span id="hdr-tasks">${tasks.length} task${tasks.length === 1 ? "" : "s"}</span>
+      <span id="hdr-tokens">${context.tokens}/${context.ceiling} context tokens</span>
+      <span id="hdr-head">log at #${head}</span>
+      <span id="status" class="live">live</span>
+    </div>
   </div>
+  <figure class="room-visual">
+    ${
+      COURTYARD_ART
+        ? `<img src="${COURTYARD_ASSET_PATH}" width="1200" height="800" alt="An illustrated atrium where work from many desks flows through one central shared board">`
+        : `<div class="courtyard-fallback" role="img" aria-label="Abstract paths meeting at one shared center"></div>`
+    }
+    <figcaption>Agents work apart. The room keeps the shared truth together.</figcaption>
+  </figure>
 </header>
 <div id="halted">${room.isHalted() ? HALTED_NOTE : ""}</div>
 <section id="brief-section"><h2>Brief ${renderContextBudget(context)}</h2><div id="brief">${renderBrief(room, context)}</div></section>
@@ -1557,6 +1680,11 @@ function route(
 
   const url = new URL(req.url ?? "/", "http://localhost");
 
+  if (url.pathname === COURTYARD_ASSET_PATH && COURTYARD_ART) {
+    sendJpeg(res, 200, COURTYARD_ART);
+    return;
+  }
+
   if (url.pathname === "/") {
     sendHtml(res, 200, renderRoomPage(room));
     return;
@@ -1816,11 +1944,20 @@ function sendHtml(res: ServerResponse, status: number, html: string): void {
     "content-type": "text/html; charset=utf-8",
     // Nothing here is a stable representation: the board moves under you.
     "cache-control": "no-store",
-    // The page loads no external anything, so it may as well say so — this
-    // makes an injected <script src> or <img src> fail even if escaping ever
-    // let one through, which is defence in depth rather than the main defence.
+    // The one permitted image source is this same local server. Everything
+    // else stays closed, so injected remote scripts or images still fail.
     "content-security-policy":
-      "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'",
+      "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; form-action 'self'",
   });
   res.end(html);
+}
+
+function sendJpeg(res: ServerResponse, status: number, image: Buffer): void {
+  res.writeHead(status, {
+    "content-type": "image/jpeg",
+    "content-length": String(image.byteLength),
+    "cache-control": "public, max-age=3600",
+    "x-content-type-options": "nosniff",
+  });
+  res.end(image);
 }
