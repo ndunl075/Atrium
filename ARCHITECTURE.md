@@ -60,11 +60,17 @@ The honest state of the project as of 2026-07-30. 21.5k lines of TypeScript, 522
 
 | Capability | Status | Section |
 |---|---|---|
-| Reference worker under `examples/` | `[PLANNED]` — next | §12.1 |
+| Reference worker under `examples/` | `[PLANNED]` — next | §12.1a |
 | `atrium plan` — proposed board from the brief | `[PLANNED]` | §12.2 |
 | `expectedOutput` contract on tasks | `[PLANNED]` | §12.3 |
 | Event stream for external observability | `[PLANNED]` | §12.4 |
 | `manager` role | `[PLANNED]` | §12.5 |
+| `needs_input` task state | `[PLANNED]` | §12.6 |
+| Fork a room from a point in its log | `[OPEN]` | §12.7 |
+| Agent cards for the roster | `[OPEN]` | §12.8 |
+| Long-lived polling workers | `[OPEN]` | §12.9 |
+| Named context blocks | `[OPEN]` | §12.10 |
+| Artifact-first tasks | `[OPEN]` — possible v1 shape | §13.6 |
 | Embeddings / semantic search | Deliberately deferred | §4 |
 | Multi-machine rooms | Deliberately deferred | §9 |
 | Enforced (non-advisory) cost caps | `[OPEN]` — may be unsolvable here | §6 |
@@ -96,7 +102,7 @@ It is not a framework for building agents. It does not define agent personalitie
 
 ## 2. Why this is not just another agent framework
 
-CrewAI, AutoGen, LangGraph, and MetaGPT all solve **agent definition and orchestration**: you describe agents and the edges between them, and the framework runs the graph. Coordination is expressed as message passing or as a pre-declared control flow.
+CrewAI, AutoGen, LangGraph, and MetaGPT all solve **agent definition and orchestration**: you describe agents and the edges between them, and the framework runs the graph. Coordination is expressed as message passing or as a pre-declared control flow. §13 surveys these and several others in detail, including what has been taken from each and what has been deliberately refused.
 
 Atrium takes the opposite position. `[ASSUMPTION]`
 
@@ -232,7 +238,7 @@ Every read returns the log sequence number it was valid at. Submitting work carr
 Tasks carry an attempt counter. `[ASSUMPTION]` Three rejections escalates to a human and freezes the task. Rooms also carry a global action budget; on exhaustion the Room halts rather than continuing to spend.
 
 **Context bloat.**
-Tier 1 context has a hard token ceiling. `[OPEN]` What happens on overflow — reject the pin, evict oldest, or summarize? Summarization reintroduces exactly the lossiness this design exists to avoid, so lean toward rejecting the pin and making the human choose.
+Tier 1 context has a hard token ceiling. `[OPEN]` What happens on overflow — reject the pin, evict oldest, or summarize? Summarization reintroduces exactly the lossiness this design exists to avoid, so lean toward rejecting the pin and making the human choose. §12.10 would improve the *message* rather than the policy: a ceiling per named block can say which part is full, where one ceiling over everything can only say that something is.
 
 **Cost runaway.**
 Per-Room and per-member spend caps exist now (`src/cost.ts`), built honestly around the constraint the rest of this section states: **Atrium does not make the model calls, so it can only total what an adapter self-reports.** A member calls `report_cost` (MCP) or the equivalent library function with a USD amount after each call it makes; Atrium folds those events into running per-member and per-room totals, the same way the board and roster are folded from the log. If a report crosses either cap, the room halts through the existing action-budget mechanism (`Room.assertUsable` / `room.halted`) — the report that crossed the cap still lands, because the money was already spent and the log must not lie about that, but every action after it is refused until a human raises the cap or starts over. `0`, or never setting the fields, means no cap, so a room that ignores this feature behaves exactly as it did before it existed.
@@ -358,23 +364,17 @@ Resolved since first draft:
 
 **Blackboard control is genuinely unsolved.** §2 states the counterargument honestly. If Rooms thrash in real use, the honest response is to add a lightweight scheduler, not to insist the pattern is pure.
 
+That scheduler now has a shape, borrowed from AutoGen (§13.4): a pluggable **claim policy** deciding which idle member gets the next claimable task, with an explicit termination condition, defaulting to the current first-come behaviour. Naming it does not build it and is not a commitment to build it — the point is that the contingency is no longer a sentence saying something would be done, and the current behaviour is now a chosen default rather than an unexamined one.
+
 **Open source is distribution, not strategy.** Stars are not adoption and adoption is not revenue. If this is a credibility play, define what a win looks like now — a number of external contributors, a specific person using it, an inbound conversation — so you can tell later whether it worked.
 
 ---
 
 ## 12. Planned work
 
-Five items, in build order. Several are adapted from CrewAI, which is worth being explicit about, along with the filter used.
+The build queue. Provenance for the borrowed ideas — which system each came from, and what was refused along with it — is in §13.
 
-CrewAI solves a different problem than Atrium and solves it in the opposite direction: it *defines* agents (role, goal, backstory) and passes each task's output forward as the next task's context. Atrium takes pre-built agents and refuses to pass messages at all. A straight feature port would make this a worse CrewAI. What is worth taking is the parts that address Atrium's actual weakness — nothing here gets a stranger from clone to a working room — without touching the thesis in §2.
-
-**Deliberately not taken, and why:**
-
-- **Agent definitions.** The moment Atrium has an `Agent` class with a role and a backstory, the §1 non-goal is gone and the "any agent from any stack" claim goes with it.
-- **Memory tiers (short-term / long-term / entity).** CrewAI needs three memory systems largely *because* its agents cannot see each other's state; memory is the patch for message-passing being lossy. Atrium has shared artifacts, `CONTEXT.md`, and search. Importing this would be importing a fix for a problem this design already avoids.
-- **Flows (start / listen / router steps).** Imperative orchestration with a state machine on top — message passing with more ceremony. The board's `dependsOn` graph is the declarative equivalent and is the better fit for a blackboard.
-- **Model provider integration (LiteLLM and similar).** Atrium does not make model calls. That is what makes the zero-runtime-dependency claim true, and it is load-bearing for §6's honesty about cost.
-- **Runtime checkpointing.** CrewAI added SQLite checkpoints to resume long-running workflows. The append-only log already does this strictly better. Nothing to take — but §3.5 should claim it, because it currently does not.
+Ordering is by what unblocks the v0.3 definition of done in §9, not by what is most interesting. §12.1 shipped; §12.1a is the other half of it and is next. Items marked `[PLANNED]` are decided and scheduled; items marked `[OPEN]` are here because they are worth wanting and are not yet decided — several carry a real objection in their own text, and none of them should be built before that objection has an answer.
 
 ### 12.1 YAML job declaration `[SHIPPED]`
 
@@ -412,7 +412,15 @@ Everything is validated before the room is created, and a cycle is a load error 
 
 `[ASSUMPTION]` Parsed with a hand-written subset parser rather than a YAML dependency (`src/yaml.ts`). The subset needed here is small — nested maps, lists, scalars, block strings, single-line flow collections — and the zero-dependency property in §8 is worth more than full YAML conformance. Everything outside the subset throws with a line number instead of being guessed at; anchors, aliases, tags, directives, and multi-document files are refused by name. If the subset starts growing to meet real files, take the dependency; do not grow a half-parser.
 
-Still outstanding for the v0.3 definition of done: this seeds a board, but a stranger still needs a worker to point at it. A shipped reference worker under `examples/` is the remaining half.
+Still outstanding for the v0.3 definition of done: this seeds a board, but a stranger still needs a worker to point at it. That is §12.1a.
+
+### 12.1a Reference worker `[PLANNED]` — next
+
+A worker under `examples/` that joins a room over MCP, claims what it can, does the work, and hands it in. Enough that `atrium init --from examples/newsroom.yaml` followed by `atrium run` shows a rejection landing, without the reader writing anything.
+
+`[CONFIRMED]` It lives in `examples/`, not `src/`, and nothing in `src/` may import it. The line that keeps Atrium from becoming an agent framework by the back door (§10, open question 6) is that a reference worker is a *demonstration of the MCP interface*, the same as any third-party agent would be, and gets no privileged access. If it ever needs something the interface does not expose, that is a finding about the interface, not a reason to reach past it.
+
+`[OPEN]` Whether it calls a real model. A worker that does makes the demo honest and makes running it cost money and require a key; one that does not is a scripted puppet that proves the plumbing and nothing about the idea. A middle option — scripted by default, real with `--model` — probably beats both, at the cost of being two things.
 
 ### 12.2 `atrium plan` `[PLANNED]`
 
@@ -445,3 +453,140 @@ CrewAI's hierarchical process has a manager agent that delegates and reviews. Th
 Add `manager` to the roles in §3.2: may create tasks, and is the default reviewer for tasks that name none.
 
 `[ASSUMPTION]` A manager is a member like any other, not a scheduler and not a control loop. It has no privileged view of the board and cannot accept its own submissions — the rule in §5 has no exceptions and this role does not become the first one. If rooms turn out to thrash without a real scheduler (§11), that is a separate decision to make deliberately, not something to let this role quietly become.
+
+### 12.6 `needs_input` task state `[PLANNED]`
+
+From A2A's task lifecycle (§13.2). Atrium's states are `open → claimed → submitted → accepted | rejected`, plus `blocked`. There is no state for *the worker started and cannot continue without something*.
+
+Today an agent in that position has three bad options: release the claim and lose its place, sit on the claim until the lease lapses, or guess. Guessing is the one that produces the plausible-but-wrong output §5 exists to catch, and it is the one an LLM will pick.
+
+Add `needs_input`: the claim is held, a question is recorded against the task, and any other member — human or agent — can answer it. Answering returns the task to `claimed` with the answer in the log.
+
+`[CONFIRMED]` The question and the answer are events on the log, not a message between two members. That is what keeps this inside the §2 thesis rather than reintroducing handoffs: a third agent reading the room later sees the question, the answer, and what was done with it, in order.
+
+`[OPEN]` Whether a claim's lease should keep ticking while a task waits on a human. It should probably pause, or every overnight question loses its claim by morning — but a lease that pauses is a lease that can be held forever by a worker that crashed right after asking.
+
+### 12.7 Fork a room from a point in its log `[OPEN]`
+
+From LangGraph's time travel (§13.1), and the strongest idea in the survey.
+
+`atrium replay 12` shows how the board looked at event 12. Nothing can *continue* from event 12. But the log is complete and every artifact version's bytes are in the object store, so a room at sequence N can be reconstructed exactly — which means `atrium fork ./room --at 12 ./variant` could produce a new room that is the old one as it stood, and then run differently.
+
+This is worth wanting because it is the thing multi-agent systems most lack. When a run goes wrong at step 40 because of a decision at step 12, the options today are re-run the whole job and hope, or hand-patch the end state. Forking makes "what if the reviewer had rejected this" a command.
+
+Atrium is unusually well placed here: LangGraph checkpoints *sampled* state and can branch from a checkpoint; Atrium has every event and every byte, so a fork is exact rather than approximate. This is the payoff of §3.5 that has not been collected.
+
+`[OPEN]` What a fork does about the world outside the room. The log records that a command acceptance ran and passed; forking does not un-send an email that command sent. A fork is honest about the room and silent about everything the room touched, and that needs saying somewhere a person will read it before they trust one.
+
+`[OPEN]` Whether the fork records its parent. It should — a variant with no memory of what it was forked from is a room that lies about its own history by omission — but that means rooms stop being fully isolated (§3.1), which is currently a `[CONFIRMED]`.
+
+### 12.8 Agent cards for the roster `[OPEN]`
+
+From A2A (§13.2). A member's capability manifest is self-reported free text plus tags (§3.2), which `list_members` hands to other agents as a lead, not a fact. A2A has standardised the shape of exactly this — a card describing what an agent can do — and 150-plus organisations have agreed to it.
+
+Adopting that shape for the manifest costs little and buys interoperability: tooling that already reads agent cards could read an Atrium roster.
+
+`[CONFIRMED]` If this happens, the manifest stays self-reported and everything that surfaces it keeps saying so. A standard shape makes a claim easier to parse; it does not make it true, and a card that looks official is more likely to be trusted than free text that obviously is not. That is a reason for caution, not enthusiasm.
+
+`[OPEN]` The bigger version — exposing a whole room as an A2A endpoint, so an A2A client could work in an Atrium room the way an MCP client does — is a real interop bet and a large one. Not now, but it is the reason to get the small version's shape right.
+
+### 12.9 Long-lived workers in the runner `[OPEN]`
+
+From Temporal's worker model (§13.5). `atrium run` launches one process per assignment and waits for it. Temporal instead has long-lived workers polling a task queue, which is cheaper per task and is what a real deployment looks like.
+
+For an agent this matters more than it does for a data pipeline: process startup for an agent runtime is not milliseconds, and a worker that stays up can hold a warm connection to the room.
+
+`[OPEN]` It also breaks the thing that currently makes the runner obviously *not* an orchestrator: a per-task process cannot hold private state between tasks, so it cannot become a second source of truth by accident. A long-lived worker can. If this is built, the rule in §7.4 needs teeth beyond good intentions.
+
+### 12.10 Named context blocks `[OPEN]`
+
+From Letta's memory blocks (§13.3). Tier 1 context is one `CONTEXT.md` plus pinned artifacts. Letta's version is labelled blocks — persona, goals, constraints — that are individually editable and always in context.
+
+The specific thing this would fix is the `[OPEN]` in §6 about context overflow. "The brief is too long, reject the pin" is a bad message. "The `constraints` block is full" is an actionable one, and it lets a room set a ceiling per block instead of one ceiling for everything.
+
+`[ASSUMPTION]` Blocks would be sections of `CONTEXT.md`, addressed by heading, not a new store. A room's brief must stay a file a person can open and read in a text editor; that property is worth more than tidy addressing.
+
+---
+
+## 13. What other systems do
+
+Surveyed 2026-07-30. Every item in §12 that came from somewhere else came from here, and the reasoning for what was *refused* is worth more than the reasoning for what was taken — the failure mode for a project with a thesis is absorbing the features of the systems it disagrees with until it no longer disagrees with them.
+
+One filter applies throughout. Atrium's bet (§2) is that coordination lives in shared state, that no agent marks its own work done, and that the log is the only truth. A feature that contradicts any of those is not a feature Atrium is missing; it is the other system being a different system. A feature that addresses Atrium's *actual* weakness — that nothing here gets a stranger from clone to a working room, and that blackboard control is unsolved — is worth taking however it arrived.
+
+| System | What it is | The idea worth taking | Refused |
+|---|---|---|---|
+| CrewAI | Role-based crews, Python | Declarative job config; planning before acting | Agent definitions, memory tiers, flows, LiteLLM |
+| LangGraph | Stateful graph runtime | Time travel — branch from a checkpoint | Graph-as-control-flow; checkpointing (already better here) |
+| A2A | Inter-agent protocol, 150+ orgs | Task lifecycle states; agent cards | Agent-to-agent messaging as the coordination primitive |
+| Letta / MemGPT | Stateful memory runtime | Labelled, individually editable context blocks | Self-managing memory; archival retrieval |
+| AutoGen / AG2 | Conversational multi-agent | Pluggable speaker selection as the shape of a scheduler | Group chat; conversation as the substrate |
+| Temporal | Durable execution | Long-lived workers polling a queue | Nothing — it validates the design |
+| Dagster | Data orchestration | Declare the asset, not the task | Scheduling, materialisation, the data-platform surface |
+| OpenAI Agents SDK | Agent framework | Tracing as an exportable span stream | Handoffs, sessions, guardrails as self-validation |
+
+### 13.1 LangGraph — time travel
+
+LangGraph treats a run as a durable graph execution, saving state at each superstep, organised into threads. Checkpoints give it fault recovery, state history, human-in-the-loop pauses, and time travel: edit state at a checkpoint and continue down an alternative branch.
+
+**Taken:** time travel, as §12.7. This is the best idea in the survey and Atrium is better placed to do it than LangGraph is. LangGraph branches from a *checkpoint* — sampled state, whatever the framework thought to persist. Atrium has every event and, since v0.2, every artifact version's bytes, so a fork is exact reconstruction rather than approximation. §3.5 has been claiming replayability as the product feature for a while; forking is the part of that claim which has never been collected.
+
+**Refused:** the graph. A pre-declared control flow is what §2 argues against, and durable execution of a graph is a better *graph*, not an argument for having one. Also refused: checkpointing, for the reason now written into §3.5 — a room has no in-memory state to lose, so there is nothing to checkpoint.
+
+**Worth noting against Atrium:** LangGraph's human-in-the-loop interrupt is more developed than anything here, which is what §12.6 is about.
+
+### 13.2 A2A — task lifecycle and agent cards
+
+An open protocol for agents from different vendors to discover each other and delegate work. Every agent publishes an Agent Card at a well-known URL describing what it does and how to reach it. Tasks move through `submitted → working → input-required → completed | canceled | failed`, and produce Artifacts. As of April 2026 it has support from 150-plus organisations including Google, Microsoft, AWS, Salesforce and IBM.
+
+**Taken:** two things. The `input-required` state, as §12.6 — Atrium has no state for "started, stuck, needs something", and the absence pushes agents toward guessing. And the agent-card shape for the roster manifest, as §12.8, for interoperability with tooling that already reads them.
+
+**Refused:** the premise. A2A is a *messaging* protocol — agents delegate to each other and return results. That is precisely the handoff §2 argues loses information. The convergence is worth noticing, though: A2A independently arrived at task lifecycle states and artifacts as the units that survive between agents, which is the same conclusion as the board and the working directory. Two designs reaching the same nouns from opposite directions is mild evidence the nouns are right.
+
+**Worth noting against Atrium:** A2A has industry weight and Atrium has none. If a standard for this settles, it will be that one. §12.8's open question — exposing a room as an A2A endpoint — is the version of this project that survives that outcome.
+
+### 13.3 Letta / MemGPT — memory blocks
+
+Memory as a first-class part of agent state: labelled blocks (`persona`, `human`, goals, preferences) always present in context and editable by the agent through tools, with archival memory in a database retrieved on demand.
+
+**Taken:** the labelled block, as §12.10 — not as memory, but as structure for the brief. §6 has an open question about what to do when Tier 1 context overflows, and named blocks turn a useless error into an actionable one.
+
+**Refused:** the memory system itself, for the reason already in §12's CrewAI notes and worth restating because Letta makes the cleanest version of the argument: agent memory is largely a fix for agents not being able to see each other's state. Atrium's answer to "what does the next agent know" is that it reads the same room. Adding a memory layer on top would be solving a problem twice, and the second solution would be the lossy one.
+
+### 13.4 AutoGen / AG2 — speaker selection
+
+Group chat with a pluggable speaker-selection method: a function receiving the last speaker and the chat, returning who goes next, or `None` to terminate. Plus termination conditions and a retry cap on selection.
+
+**Taken:** nothing yet, but the *shape*. §11 admits that if rooms thrash, the honest response is a lightweight scheduler rather than insisting the pattern is pure — and that contingency has never had a form. AutoGen's is the right form: a pluggable policy deciding who acts next, with an explicit termination condition, defaulting to something dumb. Atrium's equivalent is a claim policy — which idle member gets the next claimable task — currently first-come and unnamed. Writing it down as the shape the scheduler would take makes §11's contingency concrete without building anything.
+
+**Refused:** conversation as the coordination substrate, which is the whole of AutoGen.
+
+### 13.5 Temporal — durable execution
+
+Deterministic replay from event history, with long-lived workers polling task queues. Increasingly the durability layer under agent frameworks that lack one — the OpenAI Agents SDK has no checkpointing, state persistence, or failure recovery, and Temporal is the standard answer.
+
+**Taken:** the worker model, as §12.9. Atrium's runner launches a process per assignment; Temporal's workers stay up and poll. For agents that difference is larger than for data pipelines, because agent runtimes are slow to start.
+
+**Refused:** nothing. Temporal is the system this design most resembles, arrived at independently from the same premise — that an ordered event history you can replay beats state you have to trust — and applied to a different problem. That the durable-execution layer is what agent frameworks in 2026 keep reaching for is the strongest external evidence that §3.5 is the right foundation.
+
+**Worth noting against Atrium:** Temporal is what "the log is the truth" looks like when it is built by people who have been doing it for a decade. The gap between that and `src/log.ts` is not conceptual, it is everything else — scale, tooling, failure modes met in production.
+
+### 13.6 Dagster — declare the asset, not the task
+
+Data orchestration built on software-defined assets: rather than orchestrating tasks, you declare the asset that should exist and what produces it, and get lineage of actual artifacts instead of lineage of task runs. Freshness and staleness policies attach to the asset.
+
+**Taken:** nothing yet, and this is the one that might matter most later, so it is recorded rather than queued.
+
+Atrium's board is task-first and its artifacts are, in Dagster's terms, untracked side effects: a task says what to do, and `dependsOn` is written by hand between tasks. Dagster's inversion would have a task declare `produces: draft.md`, from which the dependency graph *derives* — draft depends on research because it reads what research wrote. Combined with the content-addressed store, that yields real lineage: which task, at which attempt, produced which version of which file.
+
+That is a strong fit with what already exists and a large change to the core model, which is exactly the combination that should sit in a design doc for a while before anyone writes code. It is the most plausible shape of a v1 that is not just v0.3 with more commands.
+
+`[OPEN]` Whether artifact-first tasks replace `dependsOn` or sit alongside it. Some work genuinely produces no file — a review, a decision — and a model where everything must produce an artifact would make those awkward or fake.
+
+### 13.7 OpenAI Agents SDK — tracing
+
+Agents with tools, handoffs, guardrails and built-in tracing that records LLM generations, tool calls, handoffs and guardrail events across a run.
+
+**Taken:** the shape of §12.4. Tracing should export as spans in a format existing tools already read — OpenTelemetry — rather than a bespoke JSON stream. Emitting the stream is in scope; charting it is not (§1).
+
+**Refused:** handoffs, for the usual reason. And guardrails, which is worth separating carefully from acceptance because they look similar and are opposites: a guardrail is a check the agent runs on itself, in parallel with its own execution, and passing it is self-certification. Acceptance (§5) is a check performed by something that is not the agent, and no configuration makes the submitter the approver. §12.3's `expectedOutput` is deliberately a contract for whoever *is* accepting, not a self-validation step — that distinction is the project.
