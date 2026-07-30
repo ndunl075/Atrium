@@ -16,3 +16,6 @@ dist/
 
 # Single-executable build output: large, and produced by CI for releases.
 build/
+
+# Rooms created while trying things out by hand.
+demo-room/
