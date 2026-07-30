@@ -60,13 +60,13 @@ The honest state of the project as of 2026-07-30. 26.5k lines of TypeScript, 692
 | The brief recorded in the log | `src/context.ts` | `context.written`, captured on join. `atrium context --record/--history/--at`. §4.1 |
 | `expectedOutput` contracts on tasks | `src/types.ts`, `src/board.ts` | A contract for whoever accepts, never a gate. §12.3 |
 | `needs_input` task state | `src/board.ts`, `src/tasks.ts` | Ask, answer, withdraw. Claim held and frozen while waiting. §12.6 |
+| Event stream | `src/stream.ts` | `atrium tail`, and SSE at `GET /events`. Payload plus rendered line. §12.4 |
 
 ### Not built
 
 | Capability | Status | Section |
 |---|---|---|
-| Event stream for external observability | `[PLANNED]` — next | §12.4 |
-| `manager` role | `[PLANNED]` | §12.5 |
+| `manager` role | `[PLANNED]` — next | §12.5 |
 | `atrium plan` — proposed board from the brief | `[PLANNED]` — blocked on a design question | §12.2 |
 | Agent cards for the roster | `[OPEN]` | §12.8 |
 | Long-lived polling workers | `[OPEN]` | §12.9 |
@@ -485,11 +485,21 @@ Add an optional `expectedOutput` to `Task`: prose stating what a finished versio
 
 `[CONFIRMED]` This is a contract, not a gate. It does not accept anything on its own; it tells whoever *is* accepting what they are accepting against. Adding a self-validating guardrail path would reintroduce self-declared completion.
 
-### 12.4 Event stream `[PLANNED]`
+### 12.4 Event stream `[SHIPPED]`
 
-The log is already a typed event stream; there is no way for anything outside Atrium to subscribe to it. `atrium tail --json` for a line-delimited stream on stdout, and an SSE endpoint on the HTTP server for anything else.
+The log was already a typed event stream with no way for anything outside Atrium to subscribe to it. `atrium tail` gives a line-delimited stream on stdout — `--json` for a tool, plain sentences for a person — and `GET /events` on the HTTP server gives Server-Sent Events. `src/stream.ts` holds the follower both are built on.
 
 This is the one place the §1 non-goal ("not an observability product") needs a stated boundary: Atrium emits the stream and charts nothing. Making the log consumable by a tool that *does* chart is the opposite of building that tool.
+
+**The payload matters more than the transport, and that was a finding rather than a design.** `atrium log --json` gives the rendered sentence and not the data behind it. §12.1a turned up what that costs: a `command` acceptance is recorded against the member that *submitted* the work, since that is who triggered the run, and the only thing separating it from a member's own judgement is the phrase "via command" inside the prose. Anyone auditing "did somebody approve their own work" by actor alone gets a false positive, and their only remedy was to parse English.
+
+So a streamed event carries its `data` verbatim *alongside* the rendered line. Consumers branch on fields, people read the sentence, and neither has to do the other's job. There is a test that performs exactly that audit through the payload, so the finding stays fixed rather than staying written down.
+
+`[CONFIRMED]` Polling, not watching. The log is SQLite on disk and is appended to by other processes — a stdio MCP server, the CLI, a worker — so there is no in-process event to subscribe to and a poll is the honest mechanism rather than a lazy one. Each tick asks only for entries after the last one seen.
+
+`[CONFIRMED]` The SSE route is authenticated exactly like the MCP route, and for a stronger reason than symmetry: the log is the room's entire history, including every note and every rejection reason. Anything that could not have joined the room has no business reading it. The SSE `id:` is the sequence number, so a client reconnecting with `Last-Event-ID` resumes with no gap and no duplicate — the one thing an event log makes trivial and most streams make hard.
+
+`[OPEN]` §13.7 argued this should export OpenTelemetry spans, so existing tools read it without an adapter. What shipped is the honest raw stream instead. A span needs a start, an end and a parent, and a room's events are points rather than intervals — deciding that a task's claim opens a span closed by its acceptance is a real modelling choice with a wrong answer available, and it should be made deliberately rather than folded into the transport.
 
 ### 12.5 `manager` role `[PLANNED]`
 

@@ -186,6 +186,15 @@ export {
   type ForkFile,
   type ForkGap,
 } from "./fork.js";
+export {
+  readStream,
+  followEvents,
+  DEFAULT_POLL_MS,
+  type StreamedEvent,
+  type StreamOptions,
+  type FollowOptions,
+  type FollowHandle,
+} from "./stream.js";
 export { parseYaml, type YamlValue, type YamlParseOptions } from "./yaml.js";
 export {
   parseJob,

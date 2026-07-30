@@ -33,6 +33,7 @@ import type { AddressInfo } from "node:net";
 
 import { RoomServer } from "./mcp.js";
 import type { Room } from "./room.js";
+import { DEFAULT_POLL_MS, followEvents } from "./stream.js";
 
 export interface ServeHttpOptions {
   /** Defaults to 127.0.0.1. Only change this deliberately. */
@@ -46,6 +47,16 @@ export interface ServeHttpOptions {
    * health checks. Defaults to "/health"; pass false to disable it.
    */
   healthPath?: string | false;
+  /**
+   * Server-Sent Events stream of the room's log, for anything that wants to
+   * watch a room without polling it (ARCHITECTURE.md §12.4). Defaults to
+   * "/events"; pass false to disable it. Authenticated exactly like the MCP
+   * route: the log is the room's whole history, and there is no reason it
+   * should be readable by anything that could not have joined.
+   */
+  eventsPath?: string | false;
+  /** How often the stream looks for new events. Defaults to one second. */
+  pollMs?: number;
 }
 
 export interface HttpServerHandle {
@@ -55,6 +66,8 @@ export interface HttpServerHandle {
   readonly url: string;
   /** The configured liveness URL, or undefined when health checks are disabled. */
   readonly healthUrl: string | undefined;
+  /** The configured event stream URL, or undefined when it is disabled. */
+  readonly eventsUrl: string | undefined;
   /** Stops accepting connections and waits for in-flight requests to finish. */
   close(): Promise<void>;
 }
@@ -72,12 +85,19 @@ export function serveHttp(
   const host = options.host ?? "127.0.0.1";
   const mcpPath = options.path ?? "/mcp";
   const healthPath = options.healthPath === false ? undefined : options.healthPath ?? "/health";
-  if (healthPath === mcpPath) {
-    throw new Error("The MCP path and health path must be different.");
+  const eventsPath = options.eventsPath === false ? undefined : options.eventsPath ?? "/events";
+  const pollMs = options.pollMs ?? DEFAULT_POLL_MS;
+  for (const [name, path] of [["health", healthPath], ["events", eventsPath]] as const) {
+    if (path !== undefined && path === mcpPath) {
+      throw new Error(`The MCP path and ${name} path must be different.`);
+    }
+  }
+  if (healthPath !== undefined && healthPath === eventsPath) {
+    throw new Error("The health path and events path must be different.");
   }
 
   const server = createServer((req, res) => {
-    handleRequest(room, mcpPath, healthPath, req, res).catch(() => {
+    handleRequest(room, mcpPath, healthPath, eventsPath, pollMs, req, res).catch(() => {
       // Only reached if something below throws outside its own try/catch —
       // a bug in this file, not a request the caller sent badly. Those are
       // already turned into a JSON-RPC or HTTP error response of their own.
@@ -101,6 +121,9 @@ export function serveHttp(
         healthUrl: healthPath
           ? `http://${host}:${address.port}${healthPath}`
           : undefined,
+        eventsUrl: eventsPath
+          ? `http://${host}:${address.port}${eventsPath}`
+          : undefined,
         close: () =>
           new Promise<void>((res, rej) => {
             server.close((err) => (err ? rej(err) : res()));
@@ -114,6 +137,8 @@ async function handleRequest(
   room: Room,
   mcpPath: string,
   healthPath: string | undefined,
+  eventsPath: string | undefined,
+  pollMs: number,
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
@@ -135,6 +160,11 @@ async function handleRequest(
     } else {
       sendJson(res, 200, health);
     }
+    return;
+  }
+
+  if (eventsPath && url.pathname === eventsPath) {
+    streamRoomEvents(room, pollMs, req, res, url);
     return;
   }
 
@@ -239,6 +269,90 @@ function readBody(req: IncomingMessage): Promise<string> {
     req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
     req.on("error", reject);
   });
+}
+
+/**
+ * The room's log as Server-Sent Events, for anything that wants to watch a
+ * room without polling it (ARCHITECTURE.md §12.4).
+ *
+ * Authenticated like the MCP route, and for a stronger reason than symmetry:
+ * the log is the room's entire history, including every note and every
+ * rejection reason. Anything that could not have joined the room has no
+ * business reading it.
+ *
+ * Each message carries the full `StreamedEvent` — payload *and* rendered
+ * sentence — so a consumer branches on fields instead of parsing prose. The
+ * SSE `id:` is the sequence number, which means a client reconnecting with
+ * `Last-Event-ID` resumes exactly where it left off with no gap and no
+ * duplicate; that is the one thing an event log makes trivial and most
+ * streams make hard.
+ */
+function streamRoomEvents(
+  room: Room,
+  pollMs: number,
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+): void {
+  if (req.method !== "GET") {
+    res.setHeader("allow", "GET");
+    sendJson(res, 405, { error: "invalid", message: `Method ${req.method} is not allowed.` });
+    return;
+  }
+
+  const token = bearerToken(req.headers.authorization);
+  if (!token) {
+    sendJson(res, 401, {
+      error: "permission",
+      message:
+        'This endpoint needs a session token. Send "Authorization: Bearer <token>" using a ' +
+        'token from "atrium invite" or an earlier "join" call.',
+    });
+    return;
+  }
+  try {
+    room.authenticate(token);
+  } catch (err) {
+    sendJson(res, 401, {
+      error: "permission",
+      message: err instanceof Error ? err.message : "That session token is not valid.",
+    });
+    return;
+  }
+
+  // Last-Event-ID wins over ?from, because it is the browser resuming a
+  // connection it already had rather than a caller stating a preference.
+  const resume = Number(req.headers["last-event-id"]);
+  const fromParam = Number(url.searchParams.get("from"));
+  const from = Number.isInteger(resume) && resume >= 0
+    ? resume
+    : Number.isInteger(fromParam) && fromParam >= 0
+      ? fromParam
+      : room.log.head();
+
+  res.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache",
+    connection: "keep-alive",
+    "x-accel-buffering": "no",
+  });
+  // A first byte immediately, so a client knows it is connected rather than
+  // waiting for the room to do something.
+  res.write(`: streaming from #${from}\n\n`);
+
+  const handle = followEvents(room, {
+    from,
+    pollMs,
+    onEvents: (events) => {
+      for (const event of events) {
+        res.write(`id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+      }
+    },
+  });
+
+  const stop = (): void => handle.stop();
+  req.on("close", stop);
+  res.on("close", stop);
 }
 
 function bearerToken(header: string | undefined): string | undefined {

@@ -63,6 +63,8 @@ import {
   reviewTask,
   runRoomOnce,
   parseRunnerConfig,
+  readStream,
+  followEvents,
   searchArtifacts,
   sweepExpiredClaims,
   toArtifactPath,
@@ -85,6 +87,7 @@ import type {
   Member,
   MemberId,
   MemberRole,
+  StreamedEvent,
   TaskId,
   RunnerConfig,
   RunnerWorker,
@@ -619,6 +622,100 @@ export function cmdInvite(argv: string[], sink: Sink): number {
 // ---------------------------------------------------------------------------
 // replay
 // ---------------------------------------------------------------------------
+
+const TAIL_HELP = `Usage: atrium tail [dir] [options]
+
+The room's events as they happen, for something other than a person.
+
+"atrium log" renders the log as prose and stops. This streams it, and each
+event carries its own payload alongside the sentence — so a tool branches
+on fields while a person reads the line, and neither has to do the other's
+job. That distinction is not cosmetic: a "command" acceptance is recorded
+against the member that submitted the work, and only the phrase "via
+command" inside the prose separates it from a member's own judgement.
+Auditing by actor alone, without the payload, gets that wrong.
+
+With --json each line is one JSON object, so this pipes into jq or any
+line-oriented consumer. Without it you get the same sentences "atrium log"
+prints, as they arrive.
+
+Atrium emits the stream and charts nothing; see ARCHITECTURE.md section 1.
+
+Options:
+  --json            one JSON object per line
+  --from <seq>      start after this event (default: the end of the log)
+  --all             start from the beginning instead
+  --type <t,t,...>  only these event types
+  --once            print what matches and exit, rather than following
+  --help, -h        show this help
+`;
+
+export async function cmdTail(argv: string[], sink: Sink): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: {
+      help: { type: "boolean", short: "h" },
+      json: { type: "boolean" },
+      from: { type: "string" },
+      all: { type: "boolean" },
+      type: { type: "string" },
+      once: { type: "boolean" },
+    },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(TAIL_HELP);
+    return 0;
+  }
+
+  let from: number | undefined;
+  if (values.from !== undefined) {
+    from = Number(values.from);
+    if (!Number.isInteger(from) || from < 0) {
+      sink.err(`--from must be a whole event number, 0 or more (got "${values.from}").`);
+      return 2;
+    }
+  }
+
+  const types = values.type?.split(",").map((t) => t.trim()).filter(Boolean) as
+    | EventType[]
+    | undefined;
+
+  const room = openRoom(positionals[0] ?? process.cwd());
+  try {
+    // Following from the end by default: a tail that replayed the whole log
+    // every time would bury whatever the reader started it to watch.
+    const start = from ?? (values.all ? 0 : room.log.head());
+
+    const emit = (events: StreamedEvent[]): void => {
+      for (const event of events) {
+        sink.out(values.json ? JSON.stringify(event) : `#${event.seq}  ${event.line}`);
+      }
+    };
+
+    if (values.once) {
+      emit(readStream(room, { from: start + 1, ...(types ? { types } : {}) }));
+      return 0;
+    }
+
+    await new Promise<void>((resolve) => {
+      const handle = followEvents(room, {
+        from: start,
+        ...(types ? { types } : {}),
+        onEvents: emit,
+      });
+      const stop = (): void => {
+        handle.stop();
+        resolve();
+      };
+      process.once("SIGINT", stop);
+      process.once("SIGTERM", stop);
+    });
+    return 0;
+  } finally {
+    room.close();
+  }
+}
 
 const FORK_HELP = `Usage: atrium fork <target> [dir] [options]
 
@@ -2999,6 +3096,7 @@ Commands:
   log [dir]             what has happened, as readable lines
   invite [dir]          add a member and print their session token
   replay <seq> [dir]    the board as it looked at that point in the log
+  tail [dir]            events as they happen, as JSON for tools or lines for people
   fork <target> [dir]   a new room that is this one at --at <seq>, free to go differently
   context [dir]         the shared brief and its token total; --pin/--unpin to curate it
   search <query> [dir]  full-text search over the room's artifacts
@@ -3431,6 +3529,7 @@ export function main(): void {
     run: cmdRun,
     serve: cmdServe,
     watch: cmdWatch,
+    tail: cmdTail,
   };
   const run = argv[0] === undefined ? undefined : longRunning[argv[0]];
   if (run) {
