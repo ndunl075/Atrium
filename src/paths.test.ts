@@ -1,9 +1,32 @@
-import { describe, expect, it } from "vitest";
-import { resolve } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { isRoomInternal, resolveArtifact, roomPaths, toArtifactPath } from "./paths.js";
 
-const ROOT = resolve("/tmp/a-room");
+const created: string[] = [];
+let ROOT: string;
+
+function tempDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  created.push(dir);
+  return dir;
+}
+
+function directoryLink(target: string, path: string): void {
+  symlinkSync(target, path, process.platform === "win32" ? "junction" : "dir");
+}
+
+beforeEach(() => {
+  ROOT = tempDir("atrium-paths-root-");
+});
+
+afterEach(() => {
+  while (created.length) {
+    rmSync(created.pop()!, { recursive: true, force: true });
+  }
+});
 
 describe("resolveArtifact", () => {
   it("resolves an ordinary relative path inside the room", () => {
@@ -41,6 +64,53 @@ describe("resolveArtifact", () => {
 
   it("refuses null bytes", () => {
     expect(() => resolveArtifact(ROOT, "a\0b")).toThrow(/null bytes/);
+  });
+
+  it("requires the room root to exist before approving a path", () => {
+    expect(() => resolveArtifact(join(ROOT, "not-created"), "draft.md")).toThrow(
+      /root must exist/,
+    );
+  });
+
+  it("refuses an existing symlink or junction that redirects outside the room", () => {
+    const parent = tempDir("atrium-paths-");
+    const room = join(parent, "room");
+    const outside = join(parent, "outside");
+    mkdirSync(room);
+    mkdirSync(outside);
+    directoryLink(outside, join(room, "escape"));
+
+    expect(() => resolveArtifact(room, "escape/secret.txt")).toThrow(
+      /outside the room through a symlink/,
+    );
+  });
+
+  it("refuses an alias into the room's own bookkeeping directory", () => {
+    const room = tempDir("atrium-paths-room-");
+    mkdirSync(join(room, ".atrium"));
+    directoryLink(join(room, ".atrium"), join(room, "records"));
+
+    expect(() => resolveArtifact(room, "records/log.db")).toThrow(/not writable/);
+  });
+
+  it("allows a symlink or junction whose target stays inside the room", () => {
+    const room = tempDir("atrium-paths-room-");
+    const target = join(room, "shared");
+    mkdirSync(target);
+    directoryLink(target, join(room, "alias"));
+
+    expect(resolveArtifact(room, "alias/draft.md")).toBe(
+      resolve(room, "alias/draft.md"),
+    );
+  });
+
+  it("rejects a dangling symlink instead of approving its future target", () => {
+    if (process.platform === "win32") return;
+
+    const room = tempDir("atrium-paths-room-");
+    symlinkSync(join(room, "..", "not-created"), join(room, "dangling"), "dir");
+
+    expect(() => resolveArtifact(room, "dangling/secret.txt")).toThrow(/cannot be resolved safely/);
   });
 });
 
