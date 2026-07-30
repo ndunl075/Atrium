@@ -154,4 +154,68 @@ describe("searchArtifacts", () => {
     expect(searchArtifacts(room, "findme", { limit: 0 })).toEqual([]);
     expect(searchArtifacts(room, "findme", { limit: 1 })).toHaveLength(1);
   });
+
+  it("limits matches to an artifact subtree", () => {
+    const room = tempRoom();
+    write(room, "docs/guide.md", "scopedword in the guide");
+    write(room, "docs/nested/details.md", "scopedword in nested docs");
+    write(room, "src/code.ts", "scopedword in source");
+
+    const hits = searchArtifacts(room, "scopedword", {
+      pathPrefix: "docs",
+    });
+
+    expect(hits.map((hit) => hit.path).sort()).toEqual([
+      "docs/guide.md",
+      "docs/nested/details.md",
+    ]);
+  });
+
+  it("accepts an exact file as the path scope", () => {
+    const room = tempRoom();
+    write(room, "docs/one.md", "exactscope shared content");
+    write(room, "docs/two.md", "exactscope shared content");
+
+    const hits = searchArtifacts(room, "exactscope", {
+      pathPrefix: "docs/one.md",
+    });
+
+    expect(hits.map((hit) => hit.path)).toEqual(["docs/one.md"]);
+  });
+
+  it("treats wildcard characters in a path scope literally", () => {
+    const room = tempRoom();
+    write(room, "docs%/inside.md", "literalwildcard content");
+    write(room, "docs-other/outside.md", "literalwildcard content");
+
+    const hits = searchArtifacts(room, "literalwildcard", {
+      pathPrefix: "docs%",
+    });
+
+    expect(hits.map((hit) => hit.path)).toEqual(["docs%/inside.md"]);
+  });
+
+  it("rejects path scopes outside the artifact tree", () => {
+    const room = tempRoom();
+
+    expect(() =>
+      searchArtifacts(room, "anything", { pathPrefix: "../outside" }),
+    ).toThrow();
+    expect(() =>
+      searchArtifacts(room, "anything", { pathPrefix: ".atrium" }),
+    ).toThrow();
+  });
+
+  it("rejects invalid maxBytes values", () => {
+    const room = tempRoom();
+
+    for (const maxBytes of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => searchArtifacts(room, "", { maxBytes })).toThrow(
+        "maxBytes must be a whole number, zero or more.",
+      );
+      expect(() => indexRoom(room, { maxBytes })).toThrow(
+        "maxBytes must be a whole number, zero or more.",
+      );
+    }
+  });
 });
