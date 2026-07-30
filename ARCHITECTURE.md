@@ -78,7 +78,9 @@ The honest state of the project as of 2026-07-30. 27.5k lines of TypeScript, 718
 
 ### Known gaps that are not features
 
-- **Not published to npm.** The README tells clients to run `atrium serve`, but the only working path today is clone → `npm install` → `npm run build` → `node dist/cli.js`. Now that `npm run demo` works from a fresh clone, this is the last thing standing between a stranger and the project — and it is the single largest one.
+- **Not published to npm yet, though the package is ready.** `package.json` is configured, trimmed (576 kB → 221 kB by dropping source maps that pointed at unshipped `src/`, and a README-only image), and verified by installing the tarball into a clean project and running the CLI and the library out of it. What remains is one interactive step nobody else can take: `npm login`, then `npm publish`.
+
+  The name is `@ndunl075/atrium`, scoped because `atrium` on npm is an unrelated `0.0.0` placeholder. The installed command is still `atrium`.
 - ~~No runnable demo.~~ Fixed by §12.1 and §12.1a: `npm run demo`.
 - ~~The runner has nothing to run.~~ `examples/demo/worker.mjs` is a working `atrium run` worker.
 

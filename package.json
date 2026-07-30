@@ -1,9 +1,29 @@
 {
-  "name": "atrium",
-  "version": "0.2.0",
+  "name": "@ndunl075/atrium",
+  "version": "0.3.0",
   "description": "A shared workspace that multiple AI agents join in order to do one job together.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "ai-agents",
+    "multi-agent",
+    "agent-coordination",
+    "blackboard",
+    "event-sourcing"
+  ],
+  "homepage": "https://github.com/ndunl075/Atrium#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ndunl075/Atrium.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ndunl075/Atrium/issues"
+  },
   "license": "Apache-2.0",
   "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=22.5.0"
   },
@@ -19,12 +39,14 @@
     "atrium": "./dist/cli.js"
   },
   "files": [
-    "dist",
-    "assets",
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
     "README.md",
-    "ARCHITECTURE.md"
+    "ARCHITECTURE.md",
+    "LICENSE"
   ],
   "scripts": {
+    "prepublishOnly": "npm run build && npm test",
     "build": "tsc -p tsconfig.json",
     "dev": "node scripts/dev.mjs",
     "demo": "npm run build && node examples/demo/run.mjs",

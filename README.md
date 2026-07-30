@@ -83,14 +83,23 @@ dependencies and does not require a separate database server.
 ## Installation
 
 ```sh
+npm install -g @ndunl075/atrium
+atrium --version
+```
+
+The package is scoped because `atrium` on npm is an unrelated placeholder
+package. The command it installs is still `atrium`.
+
+From a source checkout instead:
+
+```sh
 npm install
 npm run build
 npm test
 ```
 
-Commands in this README use `node dist/cli.js` when running from a source
-checkout. After installing Atrium as a package, use the equivalent `atrium`
-command.
+Commands in this README use `node dist/cli.js`, which is what works from a
+checkout. If you installed the package, use `atrium` in their place.
 
 ## Local development
 
