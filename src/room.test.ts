@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { foldRoster, Room } from "./room.js";
 import { HaltedError, NotFoundError, PermissionError } from "./errors.js";
+import { sha256 } from "./util.js";
 
 const created: Array<{ room: Room; dir: string }> = [];
 
@@ -193,6 +194,38 @@ describe("membership", () => {
         active: true,
       }),
     ]);
+  });
+
+  it("revokes a member's session token when they leave", () => {
+    const room = tempRoom();
+    const scout = room.join({ name: "scout", role: "worker" });
+    const editor = room.join({ name: "editor", role: "reviewer" });
+
+    room.leave(scout.member.id);
+
+    expect(() => room.authenticate(scout.token)).toThrow(PermissionError);
+    expect(room.authenticate(editor.token).id).toBe(editor.member.id);
+
+    const stored = JSON.parse(
+      readFileSync(room.paths.tokens, "utf8"),
+    ) as Record<string, string>;
+    expect(Object.values(stored)).not.toContain(scout.member.id);
+    expect(Object.values(stored)).toContain(editor.member.id);
+  });
+
+  it("refuses a stale token for an inactive member even if it remains on disk", () => {
+    const room = tempRoom();
+    const { member, token } = room.join({ name: "scout", role: "worker" });
+    room.leave(member.id);
+
+    // Simulate an old room or interrupted cleanup that still has the mapping.
+    writeFileSync(
+      room.paths.tokens,
+      JSON.stringify({ [sha256(token)]: member.id }),
+      "utf8",
+    );
+
+    expect(() => room.authenticate(token)).toThrow(/member who has left/);
   });
 
   it("checks roles", () => {

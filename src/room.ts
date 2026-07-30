@@ -207,13 +207,34 @@ export class Room {
     const member = this.member(memberId);
     if (!member.active) return;
     this.log.append(memberId, "member.left", { memberId });
+
+    // A member that has left stays in the roster for replay and attribution,
+    // but its credentials must not stay live. Remove every token for the
+    // member rather than assuming there can only ever be one.
+    const tokens = this.readTokens();
+    let changed = false;
+    for (const [tokenHash, holderId] of Object.entries(tokens)) {
+      if (holderId !== memberId) continue;
+      delete tokens[tokenHash];
+      changed = true;
+    }
+    if (changed) writeJson(this.paths.tokens, tokens, 0o600);
   }
 
   /** Turns a session token into the member holding it. */
   authenticate(token: string): Member {
     const memberId = this.readTokens()[sha256(token ?? "")];
     if (!memberId) throw new PermissionError("That session token is not valid.");
-    return this.member(memberId);
+    const member = this.member(memberId);
+    if (!member.active) {
+      // Defensive even though leave() removes tokens: old rooms, manual edits,
+      // or an interrupted token-file update must not reactivate a departed
+      // member merely because a stale credential still exists.
+      throw new PermissionError(
+        "That session token belongs to a member who has left.",
+      );
+    }
+    return member;
   }
 
   /** Everyone who has ever joined, including those who have left. */
