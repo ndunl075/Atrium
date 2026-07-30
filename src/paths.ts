@@ -13,7 +13,17 @@
  *     ...             everything the agents are actually producing
  */
 
-import { isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
+import { lstatSync, realpathSync } from "node:fs";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  normalize,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import { InvalidError } from "./errors.js";
 
 export const ATRIUM_DIR = ".atrium";
@@ -28,6 +38,59 @@ export interface RoomPaths {
   config: string;
   tokens: string;
   context: string;
+}
+
+/**
+ * Resolves every path component that already exists while preserving a
+ * possibly-missing suffix. `realpathSync` alone cannot check a new artifact,
+ * because the leaf (and often its parent directories) do not exist yet.
+ *
+ * A dangling symlink is rejected rather than treated as an ordinary missing
+ * path. Its eventual target could otherwise move a previously-approved write
+ * outside the room without another containment check.
+ */
+function canonicalPathWithMissingSuffix(path: string, requested: string): string {
+  let existing = path;
+  const suffix: string[] = [];
+
+  while (true) {
+    try {
+      lstatSync(existing);
+      break;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw err;
+
+      const parent = dirname(existing);
+      if (parent === existing) {
+        // Filesystem roots exist in ordinary operation. Keep this fallback
+        // deterministic for unusual virtual filesystems rather than looping.
+        return path;
+      }
+      suffix.unshift(basename(existing));
+      existing = parent;
+    }
+  }
+
+  let realExisting: string;
+  try {
+    realExisting = realpathSync(existing);
+  } catch {
+    throw new InvalidError(
+      "That artifact path cannot be resolved safely.",
+      { path: requested },
+    );
+  }
+  return resolve(realExisting, ...suffix);
+}
+
+function isOutside(base: string, candidate: string): boolean {
+  const rel = relative(base, candidate);
+  return rel === ".." || rel.startsWith(".." + sep) || isAbsolute(rel);
+}
+
+function isAtOrInside(base: string, candidate: string): boolean {
+  return !isOutside(base, candidate);
 }
 
 export function roomPaths(root: string): RoomPaths {
@@ -45,10 +108,17 @@ export function roomPaths(root: string): RoomPaths {
 
 /**
  * Turns a caller-supplied artifact path into an absolute one, refusing anything
- * that would land outside the room or inside its bookkeeping.
+ * that would land outside the room or inside its bookkeeping. Existing
+ * symlinks and Windows junctions are resolved before the containment check.
  *
  * Agents are the ones passing these strings and they are not always careful, so
  * this rejects absolute paths, `..` escapes, and writes into `.atrium/`.
+ *
+ * This validates the filesystem state at the time of the call. Like any
+ * path-based API, it cannot stop another process with direct filesystem
+ * access from replacing a checked directory before the caller uses the
+ * returned path; fully closing that race requires handle-relative operations
+ * that Node does not expose consistently across supported platforms.
  */
 export function resolveArtifact(root: string, requested: string): string {
   if (typeof requested !== "string" || requested.trim() === "") {
@@ -67,15 +137,51 @@ export function resolveArtifact(root: string, requested: string): string {
   }
 
   const rootAbs = resolve(root);
+  let rootReal: string;
+  try {
+    rootReal = realpathSync(rootAbs);
+  } catch {
+    throw new InvalidError("The room root must exist and be resolvable.", {
+      root: rootAbs,
+    });
+  }
+
   const candidate = resolve(rootAbs, normalize(requested));
   const rel = relative(rootAbs, candidate);
 
-  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
+  if (rel === "" || isOutside(rootAbs, candidate)) {
     throw new InvalidError("That path is outside the room.", {
       path: requested,
     });
   }
   if (rel === ATRIUM_DIR || rel.startsWith(ATRIUM_DIR + sep)) {
+    throw new InvalidError(
+      `${ATRIUM_DIR}/ holds the room's own records and is not writable as an artifact.`,
+      { path: requested },
+    );
+  }
+
+  // The lexical checks above stop `..` traversal, but the filesystem can
+  // redirect an innocent-looking component. For example, `room/outside`
+  // might be a symlink or Windows junction to a directory elsewhere, and
+  // `outside/secret.txt` would then escape despite containing no `..`.
+  //
+  // Resolve the nearest existing ancestors so this also protects writes to
+  // new files and new nested directories. The result is used only for the
+  // check; callers keep the lexical path so room-relative event paths remain
+  // stable even when the room itself was opened through a symlink.
+  const candidateReal = canonicalPathWithMissingSuffix(candidate, requested);
+  if (isOutside(rootReal, candidateReal)) {
+    throw new InvalidError("That path resolves outside the room through a symlink.", {
+      path: requested,
+    });
+  }
+
+  const internalReal = canonicalPathWithMissingSuffix(
+    join(rootAbs, ATRIUM_DIR),
+    requested,
+  );
+  if (isAtOrInside(internalReal, candidateReal)) {
     throw new InvalidError(
       `${ATRIUM_DIR}/ holds the room's own records and is not writable as an artifact.`,
       { path: requested },
