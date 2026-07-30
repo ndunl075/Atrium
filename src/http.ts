@@ -41,6 +41,11 @@ export interface ServeHttpOptions {
   port?: number;
   /** The one route this server answers on. Defaults to "/mcp". */
   path?: string;
+  /**
+   * Unauthenticated liveness route for local supervisors and container
+   * health checks. Defaults to "/health"; pass false to disable it.
+   */
+  healthPath?: string | false;
 }
 
 export interface HttpServerHandle {
@@ -48,6 +53,8 @@ export interface HttpServerHandle {
   readonly port: number;
   /** Convenience for logging and for tests: `http://host:port/path`. */
   readonly url: string;
+  /** The configured liveness URL, or undefined when health checks are disabled. */
+  readonly healthUrl: string | undefined;
   /** Stops accepting connections and waits for in-flight requests to finish. */
   close(): Promise<void>;
 }
@@ -64,9 +71,13 @@ export function serveHttp(
 ): Promise<HttpServerHandle> {
   const host = options.host ?? "127.0.0.1";
   const mcpPath = options.path ?? "/mcp";
+  const healthPath = options.healthPath === false ? undefined : options.healthPath ?? "/health";
+  if (healthPath === mcpPath) {
+    throw new Error("The MCP path and health path must be different.");
+  }
 
   const server = createServer((req, res) => {
-    handleRequest(room, mcpPath, req, res).catch(() => {
+    handleRequest(room, mcpPath, healthPath, req, res).catch(() => {
       // Only reached if something below throws outside its own try/catch —
       // a bug in this file, not a request the caller sent badly. Those are
       // already turned into a JSON-RPC or HTTP error response of their own.
@@ -87,6 +98,9 @@ export function serveHttp(
         host,
         port: address.port,
         url: `http://${host}:${address.port}${mcpPath}`,
+        healthUrl: healthPath
+          ? `http://${host}:${address.port}${healthPath}`
+          : undefined,
         close: () =>
           new Promise<void>((res, rej) => {
             server.close((err) => (err ? rej(err) : res()));
@@ -99,10 +113,31 @@ export function serveHttp(
 async function handleRequest(
   room: Room,
   mcpPath: string,
+  healthPath: string | undefined,
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
+  if (healthPath && url.pathname === healthPath) {
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      res.setHeader("allow", "GET, HEAD");
+      sendJson(res, 405, { error: "invalid", message: `Method ${req.method} is not allowed.` });
+      return;
+    }
+
+    const health = {
+      status: room.isHalted() ? "halted" : "ok",
+      head: room.log.head(),
+    };
+    res.setHeader("cache-control", "no-store");
+    if (req.method === "HEAD") {
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" }).end();
+    } else {
+      sendJson(res, 200, health);
+    }
+    return;
+  }
+
   if (url.pathname !== mcpPath) {
     sendJson(res, 404, { error: "not_found", message: `No route for ${url.pathname}.` });
     return;

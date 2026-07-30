@@ -485,6 +485,20 @@ describe("live event stream", () => {
 });
 
 describe("the live board", () => {
+  it("includes an accessible task filter and reapplies it after live board updates", async () => {
+    const room = tempRoom();
+    const worker = room.join({ name: "worker", role: "worker" }).member;
+    createTask(room, worker.id, { title: "Draft the opening" });
+
+    const { body } = await get(await start(room));
+
+    expect(body).toContain('<label for="task-filter">Filter tasks</label>');
+    expect(body).toContain('id="task-filter" type="search"');
+    expect(body).toContain('id="task-filter-status" aria-live="polite"');
+    expect(body).toContain('taskFilter.addEventListener("input", applyTaskFilter)');
+    expect(body).toContain('if (id === "board") applyTaskFilter()');
+  });
+
   it("still serves the full board, roster, artifacts and brief on first paint, before any script runs", async () => {
     const room = tempRoom();
     const scout = room.join({ name: "scout", role: "worker" }).member;
