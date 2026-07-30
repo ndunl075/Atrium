@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { Room } from "./room.js";
+import { foldRoster, Room } from "./room.js";
 import { HaltedError, NotFoundError, PermissionError } from "./errors.js";
 
 const created: Array<{ room: Room; dir: string }> = [];
@@ -175,6 +175,24 @@ describe("membership", () => {
     const roster = room.roster();
     expect(roster).toHaveLength(1);
     expect(roster[0]?.active).toBe(false);
+  });
+
+  it("replays the roster at an earlier point in the log", () => {
+    const room = tempRoom();
+    const scout = room.join({ name: "scout", role: "worker" }).member;
+    const replaySeq = room.log.head();
+
+    room.leave(scout.id);
+    room.join({ name: "editor", role: "reviewer" });
+
+    const historical = foldRoster(room.log.read({ to: replaySeq }));
+    expect(historical).toEqual([
+      expect.objectContaining({
+        id: scout.id,
+        name: "scout",
+        active: true,
+      }),
+    ]);
   });
 
   it("checks roles", () => {

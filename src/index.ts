@@ -9,6 +9,7 @@ export * from "./types.js";
 export * from "./errors.js";
 export { EventLog, type ReadOptions, type PendingEvent } from "./log.js";
 export {
+  foldRoster,
   Room,
   type CreateRoomOptions,
   type JoinOptions,

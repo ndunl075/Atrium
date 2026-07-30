@@ -32,6 +32,7 @@ import {
   describeHistory,
   diffArtifact,
   foldLeases,
+  foldRoster,
   foldTasks,
   gcBlobs,
   getContext,
@@ -546,10 +547,10 @@ export function cmdInvite(argv: string[], sink: Sink): number {
 
 const REPLAY_HELP = `Usage: atrium replay <seq> [dir]
 
-The task board and artifact leases as they looked right after event <seq>,
-not as they look now. Folds the log up to that point and judges claim and
-lease expiry against the timestamp of that event, so state that was live
-back then remains visible even if it has since lapsed for real.
+The task board, room roster, and artifact leases as they looked right after
+event <seq>, not as they look now. Folds the log up to that point and judges
+claim and lease expiry against the timestamp of that event, so state that was
+live back then remains visible even if it has since lapsed for real.
 
 Options:
   --json       print machine-readable JSON instead
@@ -600,20 +601,38 @@ export function cmdReplay(argv: string[], sink: Sink): number {
         at: event.ts,
       }).values(),
     ];
-    const names = new Map(room.roster().map((m) => [m.id, m.name] as const));
+    const members = foldRoster(events);
+    const names = new Map(members.map((m) => [m.id, m.name] as const));
     const leases = [...foldLeases(events, event.ts).values()].map((lease) => ({
       ...lease,
       holderName: names.get(lease.holder) ?? lease.holder,
     }));
 
     if (values.json) {
-      sink.out(JSON.stringify({ seq, at: event.ts, tasks, leases }, null, 2));
+      sink.out(
+        JSON.stringify({ seq, at: event.ts, tasks, members, leases }, null, 2),
+      );
       return 0;
     }
 
     sink.out(bold(`Board as of #${seq} (${event.ts})`));
     sink.out("");
     for (const line of renderBoard(tasks)) sink.out(line);
+    sink.out("");
+    sink.out(bold("Room roster"));
+    if (members.length === 0) {
+      sink.out(dim("Nobody had joined at this point."));
+    } else {
+      for (const row of table(
+        members.map((member) => [
+          member.name,
+          member.role,
+          member.active ? "active" : "left",
+        ]),
+      )) {
+        sink.out(row);
+      }
+    }
     sink.out("");
     sink.out(bold("Artifact leases"));
     if (leases.length === 0) {

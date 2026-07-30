@@ -24,6 +24,7 @@ import {
 import { roomPaths, type RoomPaths } from "./paths.js";
 import {
   DEFAULT_ROOM_CONFIG,
+  type AnyEvent,
   type Member,
   type MemberId,
   type MemberRole,
@@ -53,6 +54,35 @@ export interface JoinResult {
    * authenticated with it, so it is not recoverable from the room later.
    */
   token: string;
+}
+
+/**
+ * Replays membership events into the roster they describe.
+ *
+ * Kept as a pure fold so the live room and historical replay use exactly the
+ * same rules for joins and departures.
+ */
+export function foldRoster(events: AnyEvent[]): Member[] {
+  const members = new Map<MemberId, Member>();
+
+  for (const event of events) {
+    if (event.type === "member.joined") {
+      members.set(event.data.memberId, {
+        id: event.data.memberId,
+        name: event.data.name,
+        role: event.data.role,
+        manifest: event.data.manifest,
+        tags: event.data.tags,
+        joinedAt: event.ts,
+        active: true,
+      });
+    } else if (event.type === "member.left") {
+      const existing = members.get(event.data.memberId);
+      if (existing) existing.active = false;
+    }
+  }
+
+  return [...members.values()];
 }
 
 export class Room {
@@ -188,28 +218,9 @@ export class Room {
 
   /** Everyone who has ever joined, including those who have left. */
   roster(): Member[] {
-    const members = new Map<MemberId, Member>();
-
-    for (const event of this.log.read({
-      types: ["member.joined", "member.left"],
-    })) {
-      if (event.type === "member.joined") {
-        members.set(event.data.memberId, {
-          id: event.data.memberId,
-          name: event.data.name,
-          role: event.data.role,
-          manifest: event.data.manifest,
-          tags: event.data.tags,
-          joinedAt: event.ts,
-          active: true,
-        });
-      } else if (event.type === "member.left") {
-        const existing = members.get(event.data.memberId);
-        if (existing) existing.active = false;
-      }
-    }
-
-    return [...members.values()];
+    return foldRoster(
+      this.log.read({ types: ["member.joined", "member.left"] }),
+    );
   }
 
   member(id: MemberId): Member {

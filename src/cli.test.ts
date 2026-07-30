@@ -415,6 +415,13 @@ describe("replay", () => {
     expect(code).toBe(0);
     expect(data.seq).toBe(seq);
     expect(Array.isArray(data.tasks)).toBe(true);
+    expect(data.members).toEqual([
+      expect.objectContaining({
+        id: worker.id,
+        name: "scout",
+        active: true,
+      }),
+    ]);
     expect(data.leases).toEqual([
       expect.objectContaining({
         path: "draft.md",
@@ -444,6 +451,25 @@ describe("replay", () => {
     expect(text).toContain("Artifact leases");
     expect(text).toContain("draft.md");
     expect(text).toContain("scout");
+  });
+
+  it("shows the roster as it was at the replayed sequence", () => {
+    const { dir, room } = tempRoom();
+    const scout = room.join({ name: "scout", role: "worker" }).member;
+    const replaySeq = room.log.head();
+
+    room.leave(scout.id);
+    room.join({ name: "future-editor", role: "reviewer" });
+
+    const replayed = sink();
+    const code = cmdReplay([String(replaySeq), dir], replayed);
+    const text = replayed.outLines.join("\n");
+
+    expect(code).toBe(0);
+    expect(text).toContain("Room roster");
+    expect(text).toContain("scout");
+    expect(text).toContain("active");
+    expect(text).not.toContain("future-editor");
   });
 
   it("gives a clear message for a sequence number past the end of the log", () => {
