@@ -7,11 +7,12 @@ import { Room } from "./room.js";
 import { claimTask, createTask } from "./board.js";
 import { reviewTask, submitTask } from "./acceptance.js";
 import { acquireLease, currentLease } from "./leases.js";
-import { writeArtifact } from "./artifacts.js";
+import { deleteArtifact, writeArtifact } from "./artifacts.js";
 import { getContext, describeHistory } from "./context.js";
 import { contentAt, loadBlob, storeBlob } from "./snapshots.js";
 import { sha256 } from "./util.js";
 import {
+  cmdArtifacts,
   cmdBoard,
   cmdConfig,
   cmdContext,
@@ -787,6 +788,112 @@ describe("search", () => {
 
     expect(code).toBe(0);
     expect(JSON.parse(s.outLines.join("\n"))[0].path).toBe("notes.md");
+  });
+});
+
+describe("artifacts", () => {
+  it("lists each artifact with its size, log position, and the member name that wrote it", () => {
+    const { dir, room } = tempRoom();
+    const scout = room.join({ name: "scout", role: "worker" }).member;
+    acquireLease(room, scout.id, "draft.md");
+    writeArtifact(room, scout.id, "draft.md", "hello");
+
+    const s = sink();
+    const code = cmdArtifacts([dir], s);
+    const text = s.outLines.join("\n");
+
+    expect(code).toBe(0);
+    expect(text).toContain("draft.md");
+    expect(text).toContain("5 bytes");
+    expect(text).toContain("scout");
+  });
+
+  it("--json resolves the author's name alongside their raw id", () => {
+    const { dir, room } = tempRoom();
+    const scout = room.join({ name: "scout", role: "worker" }).member;
+    acquireLease(room, scout.id, "draft.md");
+    writeArtifact(room, scout.id, "draft.md", "hello");
+
+    const s = sink();
+    const code = cmdArtifacts(["--json", dir], s);
+    const result = JSON.parse(s.outLines.join("\n"));
+
+    expect(code).toBe(0);
+    expect(result.artifacts).toHaveLength(1);
+    expect(result.artifacts[0].path).toBe("draft.md");
+    expect(result.artifacts[0].lastWrittenBy).toBe(scout.id);
+    expect(result.artifacts[0].lastWrittenByName).toBe("scout");
+    // Not asked for, so it is left out rather than reported as an
+    // uninformative empty array.
+    expect(result.deleted).toBeUndefined();
+  });
+
+  it("leaves a deleted path out of the live list, and only shows it under its own heading when asked", () => {
+    const { dir, room } = tempRoom();
+    const scout = room.join({ name: "scout", role: "worker" }).member;
+    acquireLease(room, scout.id, "gone.md");
+    writeArtifact(room, scout.id, "gone.md", "bye");
+    deleteArtifact(room, scout.id, "gone.md");
+
+    const withoutFlag = sink();
+    cmdArtifacts(["--json", dir], withoutFlag);
+    const plain = JSON.parse(withoutFlag.outLines.join("\n"));
+    expect(plain.artifacts).toEqual([]);
+    expect(plain.deleted).toBeUndefined();
+
+    const withFlag = sink();
+    cmdArtifacts(["--json", "--include-deleted", dir], withFlag);
+    const withDeleted = JSON.parse(withFlag.outLines.join("\n"));
+    expect(withDeleted.artifacts).toEqual([]);
+    expect(withDeleted.deleted).toHaveLength(1);
+    expect(withDeleted.deleted[0].path).toBe("gone.md");
+    expect(withDeleted.deleted[0].deletedByName).toBe("scout");
+
+    // The human-readable form keeps the same separation: two headings, not
+    // one table with a deleted row mixed in.
+    const text = sink();
+    cmdArtifacts(["--include-deleted", dir], text);
+    const rendered = text.outLines.join("\n");
+    expect(rendered).toMatch(/Deleted \(1\)/);
+    expect(rendered).toContain("gone.md");
+  });
+
+  it("says plainly that there are no artifacts yet, rather than printing an empty table", () => {
+    const { dir } = tempRoom();
+    const s = sink();
+    const code = cmdArtifacts([dir], s);
+
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/no artifacts/i);
+  });
+
+  it("does not surface a file dropped into the room's working directory by hand", () => {
+    const { dir, room } = tempRoom();
+    writeFileSync(join(room.dir, "untracked.md"), "surprise");
+
+    const s = sink();
+    const code = cmdArtifacts(["--json", dir], s);
+    const result = JSON.parse(s.outLines.join("\n"));
+
+    expect(code).toBe(0);
+    expect(result.artifacts).toEqual([]);
+  });
+
+  it("is wired into the top-level dispatcher", () => {
+    const { dir, room } = tempRoom();
+    const scout = room.join({ name: "scout", role: "worker" }).member;
+    acquireLease(room, scout.id, "draft.md");
+    writeArtifact(room, scout.id, "draft.md", "hi");
+
+    const s = sink();
+    expect(runCli(["artifacts", dir], s)).toBe(0);
+  });
+
+  it("--help exits cleanly with usage text", () => {
+    const s = sink();
+    const code = cmdArtifacts(["--help"], s);
+    expect(code).toBe(0);
+    expect(s.outLines.join("\n")).toMatch(/Usage: atrium artifacts/);
   });
 });
 

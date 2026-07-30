@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -498,6 +498,66 @@ describe("list_leases", () => {
 
     const { data: single } = await call(server, "list_leases", { path: "draft.md" });
     expect(single.leases).toEqual([]);
+  });
+});
+
+describe("list_artifacts", () => {
+  it("lists several artifacts with their sizes and who last wrote them", async () => {
+    const room = tempRoom();
+    const server = new RoomServer(room);
+    await call(server, "join", { name: "scout", role: "worker" });
+
+    const wrote = await call(server, "write_artifact", { path: "draft.md", content: "hello" });
+    await call(server, "write_artifact", { path: "notes/plan.md", content: "hi there" });
+
+    const { data, isError } = await call(server, "list_artifacts");
+    expect(isError).toBe(false);
+    expect(data.artifacts).toHaveLength(2);
+    const draft = data.artifacts.find((a: any) => a.path === "draft.md");
+    expect(draft.bytes).toBe(5);
+    expect(draft.lastWrittenBy).toBe(wrote.data.lastWrittenBy);
+    // Not asked for, so the deleted list is left out entirely rather than
+    // coming back as an empty array a caller has to notice is meaningless.
+    expect(data.deleted).toBeUndefined();
+  });
+
+  it("leaves a deleted path out of the live list, and only surfaces it as its own separate list when asked", async () => {
+    const room = tempRoom();
+    const server = new RoomServer(room);
+    const joined = await call(server, "join", { name: "scout", role: "worker" });
+    await call(server, "write_artifact", { path: "gone.md", content: "bye" });
+    deleteArtifact(room, joined.data.member.id, "gone.md");
+
+    const { data } = await call(server, "list_artifacts");
+    expect(data.artifacts).toEqual([]);
+    expect(data.deleted).toBeUndefined();
+
+    const { data: withDeleted } = await call(server, "list_artifacts", { include_deleted: true });
+    expect(withDeleted.artifacts).toEqual([]);
+    expect(withDeleted.deleted).toHaveLength(1);
+    expect(withDeleted.deleted[0].path).toBe("gone.md");
+    expect(withDeleted.deleted[0].deletedBy).toBe(joined.data.member.id);
+  });
+
+  it("reports an empty room plainly rather than an empty table standing in for an error", async () => {
+    const room = tempRoom();
+    const server = new RoomServer(room);
+    await call(server, "join", { name: "scout", role: "worker" });
+
+    const { data } = await call(server, "list_artifacts");
+    expect(data.artifacts).toEqual([]);
+  });
+
+  it("does not surface a file dropped into the room's working directory by hand", async () => {
+    const room = tempRoom();
+    const server = new RoomServer(room);
+    await call(server, "join", { name: "scout", role: "worker" });
+
+    // Never went through write_artifact, so the room never recorded it.
+    writeFileSync(join(room.dir, "untracked.md"), "surprise");
+
+    const { data } = await call(server, "list_artifacts");
+    expect(data.artifacts).toEqual([]);
   });
 });
 

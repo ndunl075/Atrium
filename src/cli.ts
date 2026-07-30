@@ -35,6 +35,8 @@ import {
   gcBlobs,
   getContext,
   getTask,
+  listArtifacts,
+  listDeletedArtifacts,
   listLeases,
   listPinned,
   listSettings,
@@ -771,6 +773,133 @@ export function cmdSearch(argv: string[], sink: Sink): number {
     }
     for (const row of table(hits.map((h) => [h.score.toFixed(2), h.path, h.excerpt]))) {
       sink.out(row);
+    }
+    return 0;
+  } finally {
+    room.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// artifacts
+// ---------------------------------------------------------------------------
+//
+// `listArtifacts` has been exported from the package since artifacts.ts
+// shipped, with no caller in this file or in mcp.ts: an agent could
+// `search_artifacts` for a word it had to guess was in a file, or a human
+// could `atrium history <path>` for a path they already knew the name of,
+// but nothing could answer "what does this room have" for someone who
+// doesn't already know what to look for. This command, and the MCP tool of
+// the same name in mcp.ts, are that missing answer.
+
+const ARTIFACTS_HELP = `Usage: atrium artifacts [dir] [--include-deleted]
+
+Every artifact this room currently has: path, size, the log position it was
+last written at, and who wrote it.
+
+This is folded from the log, not read off disk (see the doc comment on
+listArtifacts in artifacts.ts for why): it describes what the room knows it
+produced, not whatever happens to be sitting in the working directory. A
+file dropped in by hand, without going through write_artifact or the
+write_artifact MCP tool, will never show up here even though "ls" would
+show it — the room never recorded producing it.
+
+A path that was written and later deleted is left out of the list above: it
+has no current bytes to report a size for, and deletion moved it out of
+"what this room currently has." Pass --include-deleted to see those too, as
+their own separate "Deleted" list rather than folded into the live one —
+telling a live artifact apart from a tombstone is the whole point of asking
+for them together, so the two are never merged into one table. A deleted
+path still has real history behind it: "atrium history <path>" and "atrium
+diff <path>" both still work on it.
+
+Options:
+  --include-deleted  also list paths that were written and later deleted
+  --json              print machine-readable JSON instead
+  --help, -h          show this help
+`;
+
+export function cmdArtifacts(argv: string[], sink: Sink): number {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: {
+      help: { type: "boolean", short: "h" },
+      json: { type: "boolean" },
+      "include-deleted": { type: "boolean" },
+    },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(ARTIFACTS_HELP);
+    return 0;
+  }
+
+  const dir = positionals[0] ?? process.cwd();
+  const room = openRoom(dir);
+  try {
+    const artifacts = listArtifacts(room);
+    const includeDeleted = values["include-deleted"] === true;
+    const deleted = includeDeleted ? listDeletedArtifacts(room) : undefined;
+
+    // Resolved the same way "atrium leases" resolves a lease holder: an
+    // author is a MemberId, which means nothing to a human reading this at a
+    // terminal without separately looking up the roster.
+    const names = new Map(room.roster().map((m) => [m.id, m.name] as const));
+    const authorName = (id: string): string => names.get(id) ?? id;
+
+    if (values.json) {
+      sink.out(
+        JSON.stringify(
+          {
+            artifacts: artifacts.map((a) => ({
+              ...a,
+              lastWrittenByName: authorName(a.lastWrittenBy),
+            })),
+            ...(deleted
+              ? {
+                  deleted: deleted.map((d) => ({
+                    ...d,
+                    deletedByName: authorName(d.deletedBy),
+                  })),
+                }
+              : {}),
+          },
+          null,
+          2,
+        ),
+      );
+      return 0;
+    }
+
+    if (artifacts.length === 0 && (!deleted || deleted.length === 0)) {
+      sink.out(
+        dim(
+          "No artifacts yet. Nothing has been written through write_artifact in this room " +
+            "— completely normal for a room that is just getting started.",
+        ),
+      );
+      return 0;
+    }
+
+    if (artifacts.length === 0) {
+      sink.out(dim("No live artifacts — everything this room ever wrote has since been deleted. See Deleted below."));
+    } else {
+      sink.out(bold(`Artifacts (${artifacts.length})`));
+      for (const row of table(
+        artifacts.map((a) => [a.path, `${a.bytes} bytes`, `#${a.seq}`, authorName(a.lastWrittenBy)]),
+      )) {
+        sink.out(`  ${row}`);
+      }
+    }
+
+    if (deleted && deleted.length > 0) {
+      sink.out("");
+      sink.out(bold(`Deleted (${deleted.length})`));
+      for (const row of table(
+        deleted.map((d) => [d.path, `#${d.seq}`, authorName(d.deletedBy), d.deletedAt]),
+      )) {
+        sink.out(`  ${row}`);
+      }
     }
     return 0;
   } finally {
@@ -2301,6 +2430,7 @@ Commands:
   replay <seq> [dir]    the board as it looked at that point in the log
   context [dir]         the shared brief and its token total; --pin/--unpin to curate it
   search <query> [dir]  full-text search over the room's artifacts
+  artifacts [dir]       every artifact the room currently has: size, last write, author
   note <text> [dir]     leave a note in the log, optionally attached to a task
   cost [dir]            per-member and room spend totals against the caps
   config [dir]          list room settings; "atrium config <key> <value> [dir]" changes one
@@ -2352,6 +2482,8 @@ function dispatch(argv: string[], sink: Sink): number {
       return cmdContext(rest, sink);
     case "search":
       return cmdSearch(rest, sink);
+    case "artifacts":
+      return cmdArtifacts(rest, sink);
     case "note":
       return cmdNote(rest, sink);
     case "cost":
