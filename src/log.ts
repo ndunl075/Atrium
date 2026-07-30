@@ -46,7 +46,9 @@ export interface ReadOptions {
   to?: number;
   /** Only these kinds of event. */
   types?: EventType[];
-  /** At most this many, taken from the start of the range. */
+  /** Sequence order. Defaults to oldest first. */
+  order?: "asc" | "desc";
+  /** At most this many, taken after sorting in the requested order. */
   limit?: number;
 }
 
@@ -109,6 +111,10 @@ export class EventLog {
   read(options: ReadOptions = {}): AnyEvent[] {
     const where: string[] = [];
     const params: (string | number)[] = [];
+    const order = options.order ?? "asc";
+    if (order !== "asc" && order !== "desc") {
+      throw new InvalidError('order must be either "asc" or "desc".');
+    }
 
     if (options.from !== undefined) {
       where.push("seq >= ?");
@@ -138,7 +144,9 @@ export class EventLog {
 
     let sql = "SELECT seq, ts, actor, type, data FROM events";
     if (where.length > 0) sql += ` WHERE ${where.join(" AND ")}`;
-    sql += " ORDER BY seq ASC";
+    // `order` is validated against two literals above rather than passed as a
+    // parameter because SQL parameters cannot stand in for keywords.
+    sql += ` ORDER BY seq ${order === "asc" ? "ASC" : "DESC"}`;
     if (options.limit !== undefined) {
       if (!Number.isInteger(options.limit) || options.limit < 0) {
         throw new InvalidError("limit must be a whole number, zero or more.");
