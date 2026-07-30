@@ -63,6 +63,8 @@ reached.
 - Command, reviewer, and human acceptance policies.
 - Versioned artifact content with history and unified diffs.
 - Ordered event history and point-in-time board replay.
+- Forking a room from any point in its log, with its history and artifact
+  versions intact.
 - MCP access over stdio or authenticated HTTP.
 - Read-only Watch UI with live task, member, artifact, and agent-activity
   views.
@@ -287,6 +289,40 @@ node dist/cli.js replay 12 ./newsroom
 node dist/cli.js history draft.md ./newsroom
 node dist/cli.js diff draft.md ./newsroom
 ```
+
+### Fork a room and try it differently
+
+`replay` shows how the board looked at a point in the log. `fork` continues
+from it:
+
+```sh
+node dist/cli.js fork ./variant ./newsroom --at 17 --dry-run
+node dist/cli.js fork ./variant ./newsroom --at 17
+```
+
+The new room is the old one exactly as it stood at event 17 — same board,
+same files, same members, same sequence numbers — and is then free to go
+differently. Its log is the parent's events up to that point followed by one
+`room.forked` event, so everything below the fork replays identically in both
+rooms and the divergence has a sequence number.
+
+Every artifact version at or below the fork point comes across too, so
+`history` and `diff` work over the inherited past rather than starting blank.
+
+Three limits, stated up front because a fork is only useful if you know what
+it is not:
+
+- **It reproduces the room, not the world.** The log records that an
+  acceptance command ran; it does not record the email that command sent, and
+  a fork cannot unsend one.
+- **It cannot rewind the brief.** `CONTEXT.md` is the one part of a room that
+  is not recorded in the log, so a fork copies the brief as it is now, not as
+  it was.
+- **It cannot bring back pruned content.** Paths whose bytes a retention sweep
+  dropped are named in the output and in the fork's own log.
+
+Session tokens are not copied. Members exist in the fork's history, but nobody
+can authenticate as one until you run `atrium invite` against it.
 
 ### Administer tasks
 

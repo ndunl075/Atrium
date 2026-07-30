@@ -377,6 +377,21 @@ function describeEvent(
     case "room.halted":
       return `Room halted: ${event.data.reason}`;
 
+    case "room.forked": {
+      // Everything above this line in the log happened in another room. Saying
+      // so is the point: a reader who does not know that would take the copied
+      // history for this room's own, which is true of its content and false
+      // about where it came from.
+      const missing = event.data.unrecoverablePaths;
+      return (
+        `Forked from "${event.data.fromName}" at event ${event.data.atSeq}. ` +
+        `Everything above this line happened there.` +
+        (missing.length > 0
+          ? ` Content for ${missing.length} path(s) had been pruned and could not come across: ${missing.join(", ")}.`
+          : "")
+      );
+    }
+
     case "cost.reported":
       return `${actorName(event.data.memberId)} reported $${event.data.amountUsd.toFixed(2)}${
         event.data.model ? ` (${event.data.model})` : ""

@@ -36,6 +36,7 @@ import {
   foldLeases,
   foldRoster,
   foldTasks,
+  forkRoom,
   gcBlobs,
   getContext,
   getTask,
@@ -47,6 +48,7 @@ import {
   listTasks,
   listVersions,
   pinArtifact,
+  planFork,
   pruneVersions,
   releaseLease,
   releaseTask,
@@ -70,6 +72,7 @@ import { serveStdio } from "./mcp.js";
 import type {
   Acceptance,
   EventType,
+  ForkPlan,
   HistoryOptions,
   Job,
   Member,
@@ -604,6 +607,129 @@ export function cmdInvite(argv: string[], sink: Sink): number {
 // ---------------------------------------------------------------------------
 // replay
 // ---------------------------------------------------------------------------
+
+const FORK_HELP = `Usage: atrium fork <target> [dir] [options]
+
+Makes a new room that is this one as it stood at a point in its log, and is
+then free to go differently. "atrium replay 12" shows how the board looked
+at event 12; this continues from it.
+
+The new room's log is this one's events up to the fork point, unchanged and
+with the same sequence numbers, followed by one "room.forked" event. Every
+artifact version at or below that point comes across too, so the fork's own
+"history" and "diff" work over the inherited past rather than starting blank.
+
+Three things it does not do, each for a different reason:
+
+  It reproduces the room, not the world. The log records that an acceptance
+  command ran; it does not record the email that command sent, and a fork
+  cannot unsend one.
+
+  It cannot rewind the brief. CONTEXT.md is the one part of a room that is
+  not in the log, so the fork gets the brief as it is now, not as it was.
+
+  It cannot bring back pruned content. Paths whose bytes a retention sweep
+  dropped are named in the output and in the fork's own log.
+
+Session tokens are not copied. Members exist in the fork's history, but
+nobody can authenticate as one until you run "atrium invite" against it.
+
+Options:
+  --at <seq>   fork from this event (default: the end of the log)
+  --name <n>   name the new room (default: the target directory's name)
+  --dry-run    say what would be copied, write nothing
+  --json       print machine-readable JSON instead
+  --help, -h   show this help
+`;
+
+export function cmdFork(argv: string[], sink: Sink): number {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: {
+      help: { type: "boolean", short: "h" },
+      json: { type: "boolean" },
+      "dry-run": { type: "boolean" },
+      at: { type: "string" },
+      name: { type: "string" },
+    },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(FORK_HELP);
+    return 0;
+  }
+
+  const target = positionals[0];
+  if (target === undefined) {
+    sink.err('fork needs somewhere to put the new room, e.g. "atrium fork ./variant".');
+    return 2;
+  }
+
+  let at: number | undefined;
+  if (values.at !== undefined) {
+    at = Number(values.at);
+    if (!Number.isInteger(at) || at < 1) {
+      sink.err(`--at must be a whole event number, 1 or more (got "${values.at}").`);
+      return 2;
+    }
+  }
+
+  const room = openRoom(positionals[1] ?? process.cwd());
+  try {
+    if (values["dry-run"]) {
+      const plan = planFork(room, at ?? room.log.head());
+      if (values.json) {
+        sink.out(JSON.stringify(plan, null, 2));
+        return 0;
+      }
+      for (const line of renderForkPlan(plan)) sink.out(line);
+      sink.out(`Nothing was written. Run without --dry-run to create ${resolve(target)}.`);
+      return 0;
+    }
+
+    const result = forkRoom(room, target, {
+      ...(at !== undefined ? { at } : {}),
+      ...(values.name !== undefined ? { name: values.name } : {}),
+    });
+
+    if (values.json) {
+      sink.out(JSON.stringify(result, null, 2));
+      return 0;
+    }
+
+    sink.out(`Forked "${room.config.name}" at event ${result.atSeq} into ${result.dir}`);
+    for (const line of renderForkPlan(result)) sink.out(line);
+    sink.out(
+      result.contextCopied
+        ? "The brief was copied as it is now — the log does not record what it said at that point."
+        : "That room had no brief to copy.",
+    );
+    sink.out(
+      "Nobody can join the fork yet: session tokens are not copied. " +
+        `Run "atrium invite ${target} --name <who> --role worker" first.`,
+    );
+    return 0;
+  } finally {
+    room.close();
+  }
+}
+
+function renderForkPlan(plan: ForkPlan): string[] {
+  const lines = [
+    `  ${plan.events} event(s) of ${plan.parentHead}, ${plan.members} member(s), ${plan.tasks} task(s)`,
+    `  ${plan.files.length} file(s)${plan.files.length > 0 ? `: ${plan.files.map((f) => f.path).join(", ")}` : ""}`,
+  ];
+  if (plan.gaps.length > 0) {
+    lines.push(
+      `  ${plan.gaps.length} path(s) whose content had been pruned and cannot come across: ` +
+        plan.gaps.map((gap) => gap.path).join(", "),
+    );
+  }
+  if (plan.inheritsHalt) {
+    lines.push("  The room had already halted by that point, so the fork starts halted too.");
+  }
+  return lines;
+}
 
 const REPLAY_HELP = `Usage: atrium replay <seq> [dir]
 
@@ -2648,6 +2774,7 @@ Commands:
   log [dir]             what has happened, as readable lines
   invite [dir]          add a member and print their session token
   replay <seq> [dir]    the board as it looked at that point in the log
+  fork <target> [dir]   a new room that is this one at --at <seq>, free to go differently
   context [dir]         the shared brief and its token total; --pin/--unpin to curate it
   search <query> [dir]  full-text search over the room's artifacts
   artifacts [dir]       every artifact the room currently has: size, last write, author
@@ -2699,6 +2826,8 @@ function dispatch(argv: string[], sink: Sink): number {
       return cmdInvite(rest, sink);
     case "replay":
       return cmdReplay(rest, sink);
+    case "fork":
+      return cmdFork(rest, sink);
     case "context":
       return cmdContext(rest, sink);
     case "search":

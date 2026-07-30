@@ -107,6 +107,50 @@ export class EventLog {
     });
   }
 
+  /**
+   * Copies history into a log that has none, keeping each event's original
+   * sequence number, timestamp and actor.
+   *
+   * This exists for one caller — `forkRoom` — and is deliberately awkward to
+   * use for anything else. `append` stamps `now()` on everything it writes,
+   * which is right for something happening and wrong for something being
+   * copied: a fork whose events all claim to have happened at the moment of
+   * forking would be a room that lies about its own history, and the history
+   * is the entire reason to fork.
+   *
+   * Refuses a log that already holds anything. Interleaving copied history
+   * with events of its own would produce a log whose sequence numbers no
+   * longer line up with the room it came from, and every artifact version,
+   * `basedOnSeq`, and prune record in the copied events refers to those
+   * numbers.
+   */
+  importHistory(events: AnyEvent[]): void {
+    if (events.length === 0) return;
+
+    this.db.transaction(() => {
+      if (this.head() !== 0) {
+        throw new InvalidError(
+          "History can only be imported into an empty log. This one already has " +
+            `${this.count()} event(s).`,
+        );
+      }
+
+      const insert = this.db.prepare(
+        "INSERT INTO events (seq, ts, actor, type, data) VALUES (?, ?, ?, ?, ?)",
+      );
+      let previous = 0;
+      for (const event of events) {
+        if (event.seq <= previous) {
+          throw new InvalidError(
+            `Imported history must be in ascending sequence order (${event.seq} came after ${previous}).`,
+          );
+        }
+        previous = event.seq;
+        insert.run(event.seq, event.ts, event.actor, event.type, JSON.stringify(event.data ?? {}));
+      }
+    });
+  }
+
   /** Everything that happened, oldest first. */
   read(options: ReadOptions = {}): AnyEvent[] {
     const where: string[] = [];

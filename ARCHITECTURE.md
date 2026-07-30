@@ -56,17 +56,18 @@ The honest state of the project as of 2026-07-30. 21.5k lines of TypeScript, 522
 | End-to-end workflow test | `src/workflow.test.ts` | research → draft → review with a real rejection. |
 | YAML job declaration | `src/jobs.ts`, `src/yaml.ts` | `atrium init --from job.yaml`. Zero-dependency subset parser. §12.1 |
 | Runnable demo with reference workers | `examples/demo/`, `src/demo.test.ts` | `npm run demo`. Scripted MCP clients; doubles as a regression test. §12.1a |
+| Fork a room from a point in its log | `src/fork.ts` | `atrium fork`. Exact reconstruction, inherited history, provenance in the log. §12.7 |
 
 ### Not built
 
 | Capability | Status | Section |
 |---|---|---|
 | `atrium plan` — proposed board from the brief | `[PLANNED]` — next | §12.2 |
+| Record the brief in the log | `[OPEN]` — a real gap, found by §12.7 | §3.5, §12.7 |
 | `expectedOutput` contract on tasks | `[PLANNED]` | §12.3 |
 | Event stream for external observability | `[PLANNED]` | §12.4 |
 | `manager` role | `[PLANNED]` | §12.5 |
 | `needs_input` task state | `[PLANNED]` | §12.6 |
-| Fork a room from a point in its log | `[OPEN]` | §12.7 |
 | Agent cards for the roster | `[OPEN]` | §12.8 |
 | Long-lived polling workers | `[OPEN]` | §12.9 |
 | Named context blocks | `[OPEN]` | §12.10 |
@@ -132,7 +133,9 @@ A **Room** is a named, persistent container for one job. It owns:
 - an event log (what has happened)
 - a roster (who is in the room)
 
-Rooms are isolated from each other. `[CONFIRMED]`
+Rooms are isolated from each other. `[CONFIRMED]` Nothing that happens in one Room can affect another: there is no shared board, no shared log, and no cross-Room reference an agent can follow.
+
+One qualification, added when forking shipped (§12.7): a Room created by `atrium fork` records the Room it was forked from, in its log. That is provenance, not a live link — the parent is not consulted, cannot be reached from the fork, and does not know the fork exists. Isolation is about operation; a fork that could not say where its first two hundred events came from would be a Room that lies by omission.
 
 ### 3.2 Members
 
@@ -173,6 +176,8 @@ Tasks carry: title, description, `depends_on[]`, `acceptance` (see §5), claim l
 Append-only, totally ordered, the **single source of truth**. The board and the roster are projections of the log, not independently mutable state.
 
 This matters more than it sounds. Multi-agent systems fail in ways that are invisible at the time of failure and inexplicable afterward. An ordered log means any run can be replayed, diffed, and explained. Debuggability is the actual product feature here, not a nice-to-have.
+
+One thing it does not currently cover, which §12.7 found and §4 should be read alongside: **the room's brief is not in the log.** Pinning and unpinning are events; editing `CONTEXT.md` is a plain file write that nothing records. So the log captures every consequence of the instruction and not the instruction, and no amount of replaying recovers what an agent was actually told at the time. This is a genuine gap in the claim this section makes, not a deliberate exclusion.
 
 It also makes resumability fall out for free rather than needing a mechanism. A room has no in-memory state to lose: every reader folds the log, so a process that dies mid-job and a process that starts fresh a week later are the same case. Frameworks that pass state between agents in memory have to bolt on periodic checkpointing to get this back, and get a *sampled* history for their trouble; here there is nothing to checkpoint, because nothing was ever anywhere else.
 
@@ -486,19 +491,35 @@ Add `needs_input`: the claim is held, a question is recorded against the task, a
 
 `[OPEN]` Whether a claim's lease should keep ticking while a task waits on a human. It should probably pause, or every overnight question loses its claim by morning — but a lease that pauses is a lease that can be held forever by a worker that crashed right after asking.
 
-### 12.7 Fork a room from a point in its log `[OPEN]`
+### 12.7 Fork a room from a point in its log `[SHIPPED]`
 
 From LangGraph's time travel (§13.1), and the strongest idea in the survey.
 
-`atrium replay 12` shows how the board looked at event 12. Nothing can *continue* from event 12. But the log is complete and every artifact version's bytes are in the object store, so a room at sequence N can be reconstructed exactly — which means `atrium fork ./room --at 12 ./variant` could produce a new room that is the old one as it stood, and then run differently.
+`atrium replay 12` shows how the board looked at event 12; nothing could *continue* from it. `atrium fork ./variant ./room --at 12` now produces a new room that is the old one as it stood at event 12, and is then free to go differently. `src/fork.ts`, with `--dry-run` and `--json`.
 
-This is worth wanting because it is the thing multi-agent systems most lack. When a run goes wrong at step 40 because of a decision at step 12, the options today are re-run the whole job and hope, or hand-patch the end state. Forking makes "what if the reviewer had rejected this" a command.
+This is the thing multi-agent systems most lack. When a run goes wrong at step 40 because of a decision at step 12, the options were re-run the whole job and hope, or hand-patch the end state. "What if the reviewer had accepted this" is now a command.
 
-Atrium is unusually well placed here: LangGraph checkpoints *sampled* state and can branch from a checkpoint; Atrium has every event and every byte, so a fork is exact rather than approximate. This is the payoff of §3.5 that has not been collected.
+Atrium is unusually well placed here, and building it confirmed why. LangGraph branches from a checkpoint — whatever state the framework thought to persist. A fork here copies the parent's events **with their original sequence numbers and timestamps**, which matters more than it sounds: every `basedOnSeq`, every artifact version, and every prune record in those events refers to those numbers, so a fork that renumbered them would be subtly wrong everywhere. `EventLog.importHistory` exists only for this, and refuses any log that already holds an event, because interleaving copied history with new events is the way that guarantee gets lost.
 
-`[OPEN]` What a fork does about the world outside the room. The log records that a command acceptance ran and passed; forking does not un-send an email that command sent. A fork is honest about the room and silent about everything the room touched, and that needs saying somewhere a person will read it before they trust one.
+Blobs for every version at or below the fork point come across too, not just the current bytes. A fork with only the current content would work and have no past: `atrium history` would list versions whose content could not be read, and `atrium diff` would refuse. The inherited history is most of the point.
 
-`[OPEN]` Whether the fork records its parent. It should — a variant with no memory of what it was forked from is a room that lies about its own history by omission — but that means rooms stop being fully isolated (§3.1), which is currently a `[CONFIRMED]`.
+**Provenance** `[CONFIRMED]`, resolving the open question that was here. The fork's log is the parent's events 1..N followed by one `room.forked` event naming the parent room, its name, the sequence forked from, and any paths whose content could not come across. It sits *after* the copied history so everything at or below N replays identically in both rooms and the divergence has a sequence number of its own. It lives in the log rather than only in `room.json` because a room that could not say what it was forked from would be telling the truth about everything except its own first cause. §3.1's isolation claim has been amended to match: rooms are isolated in operation, and a fork records where it came from, which is provenance rather than a live link.
+
+**The world outside the room** `[CONFIRMED]`, resolving the other open question. A fork reproduces the room, not the world: the log records that an acceptance command ran, not the email that command sent, and forking cannot unsend one. This is not fixable from here — it is a property of being an out-of-process observer, the same ceiling §6 hits on cost. So it is stated rather than solved, in the command's own `--help` where somebody reads it before trusting a fork rather than after.
+
+**Tokens are not copied** `[CONFIRMED]`. Members exist in a fork because they are in the copied history, but nobody can authenticate as one until `atrium invite` is run against it. A session token is a credential, and copying credentials to a new location as a side effect of a debugging command is not something this should do quietly.
+
+**A pruned version cannot come back.** If a retention sweep dropped the bytes a fork needs, the fork has none either. Those paths are named in the result and in the `room.forked` event, so the new room's own history says what is missing instead of presenting a file that was never there as merely absent.
+
+#### The finding: the brief is not in the log
+
+Building this turned up a real hole in §3.5's claim that the log is the single source of truth. **`CONTEXT.md` is not in it.** `context.pinned` and `context.unpinned` are events, but editing the brief itself is a plain file write that nothing records.
+
+So `atrium replay 12` cannot tell you what the brief said at event 12, and neither can a fork. A fork copies the brief *as it is now* and says which it did, because that is the only honest option available.
+
+This is worth naming as its own defect rather than a footnote on forking. The brief is Tier 1 context (§4) — the first thing every agent reads, and therefore an input to every decision the log does record. A log that captures every consequence and not the instruction is missing the one thing that would explain the rest. Forking is simply the first feature to trip over it.
+
+`[OPEN]` The fix is presumably a `context.written` event recording a hash of the brief, with the bytes in the same content-addressed store the artifacts use — at which point the brief is versioned exactly like everything else and `atrium history CONTEXT.md` works. The open part is whether the brief then stops being a file a person can edit in a text editor without Atrium knowing, which is currently one of the better things about it.
 
 ### 12.8 Agent cards for the roster `[OPEN]`
 
@@ -549,7 +570,9 @@ One filter applies throughout. Atrium's bet (§2) is that coordination lives in 
 
 LangGraph treats a run as a durable graph execution, saving state at each superstep, organised into threads. Checkpoints give it fault recovery, state history, human-in-the-loop pauses, and time travel: edit state at a checkpoint and continue down an alternative branch.
 
-**Taken:** time travel, as §12.7. This is the best idea in the survey and Atrium is better placed to do it than LangGraph is. LangGraph branches from a *checkpoint* — sampled state, whatever the framework thought to persist. Atrium has every event and, since v0.2, every artifact version's bytes, so a fork is exact reconstruction rather than approximation. §3.5 has been claiming replayability as the product feature for a while; forking is the part of that claim which has never been collected.
+**Taken:** time travel, shipped as §12.7. This was the best idea in the survey and Atrium is better placed to do it than LangGraph is. LangGraph branches from a *checkpoint* — sampled state, whatever the framework thought to persist. Atrium has every event and, since v0.2, every artifact version's bytes, so a fork is exact reconstruction rather than approximation, down to the parent's own sequence numbers and timestamps.
+
+Building it also paid a debt: §3.5 had been claiming replayability as the product feature since the first draft, and forking is the part of that claim nobody had collected. It also found the one place the claim is false — the brief is not in the log — which no amount of re-reading the document would have turned up.
 
 **Refused:** the graph. A pre-declared control flow is what §2 argues against, and durable execution of a graph is a better *graph*, not an argument for having one. Also refused: checkpointing, for the reason now written into §3.5 — a room has no in-memory state to lose, so there is nothing to checkpoint.
 

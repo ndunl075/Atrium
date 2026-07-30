@@ -163,6 +163,15 @@ export {
   type VerifySummary,
   type VerifyReport,
 } from "./verify.js";
+export {
+  planFork,
+  forkRoom,
+  type ForkPlan,
+  type ForkResult,
+  type ForkOptions,
+  type ForkFile,
+  type ForkGap,
+} from "./fork.js";
 export { parseYaml, type YamlValue, type YamlParseOptions } from "./yaml.js";
 export {
   parseJob,

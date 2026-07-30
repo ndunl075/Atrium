@@ -255,6 +255,28 @@ export interface EventMap {
   "room.halted": { reason: string };
 
   /**
+   * Where a forked room came from. Appended once, immediately after the
+   * history copied out of the parent, so a fork's provenance is in the log
+   * rather than only in its config — a room that could not say what it was
+   * forked from would be telling the truth about everything except its own
+   * first cause.
+   *
+   * It sits *after* the copied events on purpose. Everything at or below
+   * `atSeq` is byte-identical to the parent, so replaying a fork to any point
+   * in that range gives exactly what replaying the parent to the same point
+   * gives, and the divergence has a sequence number of its own.
+   */
+  "room.forked": {
+    /** The parent's room id, which no longer exists anywhere else. */
+    fromRoomId: string;
+    fromName: string;
+    /** The parent sequence number this room was taken from. */
+    atSeq: number;
+    /** Paths whose content the parent no longer had, so the fork has none. */
+    unrecoverablePaths: string[];
+  };
+
+  /**
    * A member self-reporting what a model call cost. Atrium does not make the
    * call itself, so this is the only way it learns about money spent — see
    * ARCHITECTURE.md §6. A member that never appends one of these is never
@@ -308,6 +330,7 @@ const EVENT_TYPE_REGISTRY: Record<EventType, true> = {
   "context.unpinned": true,
   "note.posted": true,
   "room.halted": true,
+  "room.forked": true,
   "cost.reported": true,
 };
 
