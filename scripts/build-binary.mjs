@@ -30,6 +30,9 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { buildSync } from "esbuild";
+import { inject } from "postject";
+
 const FUSE = "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2";
 const BUILD = "build";
 
@@ -39,51 +42,42 @@ const exeName = isWindows ? "atrium.exe" : "atrium";
 const exePath = join(BUILD, exeName);
 
 /**
- * Nothing here runs through a shell, and nothing is fetched at build time.
+ * Both build tools are used through their JavaScript APIs rather than their
+ * command lines, and that is not a style preference — it is the third attempt
+ * at this, after the first two broke on platforms they were not written on.
  *
- * The obvious way to reach these tools is `npx`, which on Windows means
- * `npx.cmd`, which means `shell: true`. That works, and then quietly poisons
- * every argument: a Windows shell strips the quotes out of
- * `--define:X="1.0"`, so the quotes have to be escaped — and the escaped form
- * is passed through literally on Linux and macOS, where there is no shell to
- * remove them, and esbuild rejects a define value of `\"0.2.0\"`. That is not
- * hypothetical: it shipped, passed on Windows, and failed on both other
- * platforms the first time the release matrix ran.
+ * Going through `npx` needs a shell on Windows (`npx.cmd`), and a Windows
+ * shell eats the quotes in `--define:X="1.0"`. Escaping them to survive it
+ * then passes the escaped form through literally on Linux and macOS, where
+ * there is no shell, and esbuild rejects it. Dropping the shell does not help:
+ * Node refuses to spawn a `.cmd` at all since the fix for CVE-2024-27980.
  *
- * Dropping the shell is not enough either, because Node refuses to spawn a
- * `.cmd` without one (the fix for CVE-2024-27980), so `npx.cmd` fails with
- * EINVAL.
+ * Invoking the installed binary directly fails differently. On Windows
+ * `node_modules/esbuild/bin/esbuild` is a JavaScript shim, so `node` can run
+ * it; on Linux and macOS that same path *is* the native executable, and `node`
+ * reports a syntax error trying to parse it.
  *
- * So the tools are ordinary devDependencies, invoked as the JavaScript files
- * they are. No shell, so every argument arrives exactly as written on every
- * platform; and no `npx --yes`, so a release build resolves the same versions
- * the lockfile pins rather than whatever the registry serves that morning.
+ * There is no argument to quote and no path to guess when the tool is just a
+ * function. `run` remains only for Node's own SEA step, which has no API.
  */
 function run(cmd, args) {
   execFileSync(cmd, args, { stdio: "inherit" });
 }
 
-function runNode(script, args) {
-  run(process.execPath, [script, ...args]);
-}
-
-const ESBUILD = join("node_modules", "esbuild", "bin", "esbuild");
-const POSTJECT = join("node_modules", "postject", "dist", "cli.js");
-
 mkdirSync(BUILD, { recursive: true });
 
 console.log(`> bundling (version ${pkg.version})`);
-runNode(ESBUILD, [
-  "src/sea.ts",
-  "--bundle",
-  "--platform=node",
-  "--format=cjs",
-  "--target=node22",
-  // Plain JSON quoting, which is what esbuild wants. No shell escaping,
-  // because there is no shell — see `run` above for why that matters.
-  `--define:__ATRIUM_VERSION__="${pkg.version}"`,
-  `--outfile=${join(BUILD, "atrium.cjs")}`,
-]);
+buildSync({
+  entryPoints: ["src/sea.ts"],
+  bundle: true,
+  platform: "node",
+  format: "cjs",
+  target: "node22",
+  outfile: join(BUILD, "atrium.cjs"),
+  // The value is JSON, so a string needs its quotes. Passed as data rather
+  // than as text on a command line, nothing can strip them.
+  define: { __ATRIUM_VERSION__: JSON.stringify(pkg.version) },
+});
 
 console.log("> preparing the SEA blob");
 writeFileSync(
@@ -105,13 +99,12 @@ copyFileSync(process.execPath, exePath);
 if (!isWindows) chmodSync(exePath, 0o755);
 
 console.log("> injecting");
-runNode(POSTJECT, [
-  exePath,
-  "NODE_SEA_BLOB",
-  join(BUILD, "sea-prep.blob"),
-  "--sentinel-fuse",
-  FUSE,
-]);
+await inject(exePath, "NODE_SEA_BLOB", readFileSync(join(BUILD, "sea-prep.blob")), {
+  sentinelFuse: FUSE,
+  // Only meaningful on macOS, ignored elsewhere; without it the injected
+  // binary fails its own signature check and refuses to start.
+  machoSegmentName: process.platform === "darwin" ? "NODE_SEA" : undefined,
+});
 
 // The step that makes the rest trustworthy. A SEA that was assembled wrongly
 // still produces a large, plausible-looking file; the only way to know it is a
