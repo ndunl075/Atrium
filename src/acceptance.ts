@@ -61,6 +61,14 @@ const MAX_OUTPUT_CHARS = 8_000;
  */
 const DEFAULT_COMMAND_TIMEOUT_MS = 60_000;
 
+/**
+ * How long to wait for a killed command to actually be gone before reporting
+ * it as killed anyway. Generous enough to cover `taskkill` walking a process
+ * tree on a loaded machine, short enough that a room is never held up long by
+ * a process that refuses to die.
+ */
+const KILL_GRACE_MS = 5_000;
+
 /** Where a command's timeout came from, so a killed command's own message can
  * point at the thing to change instead of leaving whoever reads it guessing
  * whether the number is a per-task setting, the room's default, or something
@@ -361,6 +369,52 @@ export function pendingReview(room: Room): Task[] {
 // ---------------------------------------------------------------------------
 
 /**
+ * Kills the command and everything it started, not just the shell.
+ *
+ * `runShell` spawns through a shell, so what the child handle actually refers
+ * to is `sh -c ...` or `cmd.exe /c ...`, and the command the room cares about
+ * is that shell's child. `child.kill()` signals only the shell. On POSIX the
+ * orphan usually dies with its parent's process group anyway; on Windows there
+ * are no process groups behind `kill`, so the real command survives happily.
+ *
+ * That made the timeout message a lie on Windows. The log said "timed out and
+ * was killed" while a `sleep 5` — or, in a real room, a build that had wedged —
+ * carried on running, holding the room's working directory open and burning
+ * whatever it was burning. A room that records something it did not do is the
+ * one failure this codebase consistently refuses, and it was doing it here.
+ *
+ * So the whole tree goes: `taskkill /T` on Windows, which walks children, and
+ * a process-group signal on POSIX, which is why the child is spawned into its
+ * own group. Both fall back to the plain `kill` if that fails, since killing
+ * only the shell still beats killing nothing.
+ */
+function killTree(child: ReturnType<typeof spawn>): void {
+  const pid = child.pid;
+  if (pid === undefined) return;
+
+  if (process.platform === "win32") {
+    try {
+      // Fire-and-forget: waiting on taskkill would mean the room waits on a
+      // process it has already given a verdict about.
+      spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" }).on("error", () => {
+        child.kill("SIGKILL");
+      });
+      return;
+    } catch {
+      child.kill("SIGKILL");
+      return;
+    }
+  }
+
+  try {
+    // Negative pid signals the whole group, which `detached` gave this child.
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    child.kill("SIGKILL");
+  }
+}
+
+/**
  * Needs a shell because the acceptance field is documented as "a shell
  * command that must exit 0" — pipes, `&&`, globbing, all the things a plain
  * argv exec cannot do.
@@ -371,26 +425,52 @@ function runShell(
   timeout: ResolvedTimeout,
 ): Promise<AcceptanceCommandResult> {
   return new Promise((resolve) => {
-    const child = spawn(command, { cwd, shell: true });
+    // `detached` on POSIX puts the shell in its own process group, which is
+    // what lets killTree signal the command as well as the shell. It is
+    // deliberately not set on Windows, where it means "new console window"
+    // rather than "new process group" and taskkill handles the tree instead.
+    const child = spawn(command, {
+      cwd,
+      shell: true,
+      ...(process.platform === "win32" ? {} : { detached: true }),
+    });
 
     let output = "";
     let settled = false;
+    let timedOut = false;
     const finish = (result: AcceptanceCommandResult) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(graceTimer);
       resolve(result);
     };
 
+    const timedOutResult = (note = ""): AcceptanceCommandResult => ({
+      ok: false,
+      exitCode: null,
+      output:
+        `${truncate(output)}\n[timed out after ${timeout.seconds}s and was killed${note} — ` +
+        `${describeTimeoutOrigin(timeout)}]`,
+    });
+
+    let graceTimer: ReturnType<typeof setTimeout>;
+
     const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      finish({
-        ok: false,
-        exitCode: null,
-        output:
-          `${truncate(output)}\n[timed out after ${timeout.seconds}s and was killed — ` +
-          `${describeTimeoutOrigin(timeout)}]`,
-      });
+      timedOut = true;
+      killTree(child);
+
+      // Deliberately not resolving here. Killing is not instant — on Windows
+      // it means waiting on `taskkill` to walk the tree — and answering
+      // "was killed" before the process has actually gone is the same kind of
+      // false statement the rest of this file works to avoid. The `close`
+      // handler below reports the timeout once the process really has exited.
+      //
+      // The grace timer is the honest fallback: if the tree will not die, say
+      // so rather than waiting forever on it.
+      graceTimer = setTimeout(() => {
+        finish(timedOutResult(", but it did not exit"));
+      }, KILL_GRACE_MS);
     }, timeout.ms);
 
     child.stdout?.on("data", (chunk: Buffer) => {
@@ -411,7 +491,9 @@ function runShell(
     });
 
     child.on("close", (code) => {
-      finish({ ok: code === 0, exitCode: code, output: truncate(output) });
+      // A close after the timer fired is the kill landing, not the command
+      // finishing on its own, so the verdict is the timeout either way.
+      finish(timedOut ? timedOutResult() : { ok: code === 0, exitCode: code, output: truncate(output) });
     });
   });
 }

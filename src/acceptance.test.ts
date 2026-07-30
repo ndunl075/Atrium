@@ -36,7 +36,21 @@ afterEach(() => {
     } catch {
       // already closed
     }
-    rmSync(entry.dir, { recursive: true, force: true });
+    // Retried, unlike the identical cleanup in every other test file, because
+    // this is the one that kills processes. `runShell` resolves a timed-out
+    // command as soon as it calls `kill`, which is the right thing for the
+    // room — the verdict is known and nothing should wait on a process that
+    // is already doomed. Windows, though, does not release the child's handle
+    // on its working directory the instant the kill returns, and that working
+    // directory is the room we are about to delete. So the unlucky ordering
+    // is a real one and it happens often: `rmdir` lands before the OS has
+    // finished tearing the process down, and fails with EBUSY.
+    //
+    // These are exactly the retries `maxRetries`/`retryDelay` exist for. The
+    // alternative — having `runShell` wait for the process to actually exit
+    // after killing it — would make production code slower to answer in order
+    // to make a test tidier, which is the wrong way round.
+    rmSync(entry.dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
