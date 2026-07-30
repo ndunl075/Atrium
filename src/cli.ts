@@ -31,6 +31,7 @@ import {
   currentLease,
   describeHistory,
   diffArtifact,
+  foldLeases,
   foldTasks,
   gcBlobs,
   getContext,
@@ -545,10 +546,10 @@ export function cmdInvite(argv: string[], sink: Sink): number {
 
 const REPLAY_HELP = `Usage: atrium replay <seq> [dir]
 
-The task board as it looked right after event <seq>, not as it looks now.
-Folds the log up to that point and judges claim expiry against the
-timestamp of that event, so a claim that had not yet lapsed back then still
-reads as claimed even if it has since lapsed for real.
+The task board and artifact leases as they looked right after event <seq>,
+not as they look now. Folds the log up to that point and judges claim and
+lease expiry against the timestamp of that event, so state that was live
+back then remains visible even if it has since lapsed for real.
 
 Options:
   --json       print machine-readable JSON instead
@@ -590,23 +591,44 @@ export function cmdReplay(argv: string[], sink: Sink): number {
     }
 
     // Folding at the timestamp of the event itself, not now, is what makes this
-    // a real replay: a claim that was still live at #seq must still read as
-    // claimed, even though wall-clock time has moved on since.
+    // a real replay: a claim or lease that was still live at #seq must still
+    // read as live, even though wall-clock time has moved on since.
+    const events = room.log.read({ to: seq });
     const tasks = [
-      ...foldTasks(room.log.read({ to: seq }), {
+      ...foldTasks(events, {
         maxAttempts: room.config.maxAttempts,
         at: event.ts,
       }).values(),
     ];
+    const names = new Map(room.roster().map((m) => [m.id, m.name] as const));
+    const leases = [...foldLeases(events, event.ts).values()].map((lease) => ({
+      ...lease,
+      holderName: names.get(lease.holder) ?? lease.holder,
+    }));
 
     if (values.json) {
-      sink.out(JSON.stringify({ seq, at: event.ts, tasks }, null, 2));
+      sink.out(JSON.stringify({ seq, at: event.ts, tasks, leases }, null, 2));
       return 0;
     }
 
     sink.out(bold(`Board as of #${seq} (${event.ts})`));
     sink.out("");
     for (const line of renderBoard(tasks)) sink.out(line);
+    sink.out("");
+    sink.out(bold("Artifact leases"));
+    if (leases.length === 0) {
+      sink.out(dim("No paths were leased at this point."));
+    } else {
+      for (const row of table(
+        leases.map((lease) => [
+          lease.path,
+          lease.holderName,
+          `until ${lease.expiresAt}`,
+        ]),
+      )) {
+        sink.out(row);
+      }
+    }
     return 0;
   } finally {
     room.close();

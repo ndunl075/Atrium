@@ -405,6 +405,7 @@ describe("replay", () => {
     const { dir, room } = tempRoom();
     const worker = room.join({ name: "scout", role: "worker" }).member;
     createTask(room, worker.id, { title: "draft" });
+    acquireLease(room, worker.id, "draft.md");
     const seq = room.log.head();
 
     const s = sink();
@@ -414,6 +415,35 @@ describe("replay", () => {
     expect(code).toBe(0);
     expect(data.seq).toBe(seq);
     expect(Array.isArray(data.tasks)).toBe(true);
+    expect(data.leases).toEqual([
+      expect.objectContaining({
+        path: "draft.md",
+        holder: worker.id,
+        holderName: "scout",
+      }),
+    ]);
+  });
+
+  it("replays leases against the event's clock instead of the current clock", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+    const { dir, room } = tempRoom({ config: { leaseSeconds: 60 } });
+    const worker = room.join({ name: "scout", role: "worker" }).member;
+    acquireLease(room, worker.id, "draft.md");
+    const leaseSeq = room.log.head();
+
+    vi.setSystemTime(new Date("2026-01-01T00:10:00.000Z"));
+    expect(currentLease(room, "draft.md")).toBeUndefined();
+
+    const replayed = sink();
+    const code = cmdReplay([String(leaseSeq), dir], replayed);
+    const text = replayed.outLines.join("\n");
+
+    expect(code).toBe(0);
+    expect(text).toContain("Artifact leases");
+    expect(text).toContain("draft.md");
+    expect(text).toContain("scout");
   });
 
   it("gives a clear message for a sequence number past the end of the log", () => {
