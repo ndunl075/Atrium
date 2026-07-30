@@ -8,6 +8,7 @@ import { PassThrough } from "node:stream";
 import { RoomServer, serveStdio } from "./mcp.js";
 import { Room } from "./room.js";
 import { acquireLease } from "./leases.js";
+import { deleteArtifact } from "./artifacts.js";
 import { pruneVersions } from "./snapshots.js";
 
 const created: Array<{ room: Room; dir: string }> = [];
@@ -727,5 +728,230 @@ describe("read_log filtering", () => {
     });
     expect(isError).toBe(false);
     expect(data).toEqual([]);
+  });
+});
+
+describe("list_versions", () => {
+  it("lists every write for a path, oldest first, with seq/author/size", async () => {
+    const room = tempRoom();
+    const server = new RoomServer(room);
+    const joined = await call(server, "join", { name: "scout", role: "worker" });
+
+    const v1 = await call(server, "write_artifact", { path: "draft.md", content: "one" });
+    const v2 = await call(server, "write_artifact", { path: "draft.md", content: "two" });
+
+    const { data, isError } = await call(server, "list_versions", { path: "draft.md" });
+
+    expect(isError).toBe(false);
+    expect(data).toHaveLength(2);
+    expect(data[0]).toMatchObject({
+      seq: v1.data.seq,
+      author: joined.data.member.id,
+      kind: "written",
+      bytes: 3,
+    });
+    expect(data[1]).toMatchObject({ seq: v2.data.seq, kind: "written", bytes: 3 });
+    // Oldest first, so a reviewer scanning top to bottom reads the same order
+    // the work actually happened in.
+    expect(data[0].seq).toBeLessThan(data[1].seq);
+  });
+
+  it("still lists every version before a delete, not just what currently exists", async () => {
+    const room = tempRoom();
+    const server = new RoomServer(room);
+    const joined = await call(server, "join", { name: "scout", role: "worker" });
+
+    const written = await call(server, "write_artifact", { path: "draft.md", content: "one" });
+    deleteArtifact(room, joined.data.member.id, "draft.md");
+
+    const { data } = await call(server, "list_versions", { path: "draft.md" });
+
+    expect(data).toHaveLength(2);
+    expect(data[0]).toMatchObject({ seq: written.data.seq, kind: "written" });
+    expect(data[1]).toMatchObject({ kind: "deleted" });
+    expect(data[1].bytes).toBeUndefined();
+  });
+
+  it("answers with an empty list for a path never written, rather than an error", async () => {
+    const server = new RoomServer(tempRoom());
+    await call(server, "join", { name: "scout", role: "worker" });
+
+    const { data, isError } = await call(server, "list_versions", { path: "never.md" });
+
+    expect(isError).toBe(false);
+    expect(data).toEqual([]);
+  });
+});
+
+describe("diff_artifact", () => {
+  it("returns a real unified patch between two explicit versions", async () => {
+    const server = new RoomServer(tempRoom());
+    await call(server, "join", { name: "scout", role: "worker" });
+
+    const v1 = await call(server, "write_artifact", { path: "draft.md", content: "line1\n" });
+    const v2 = await call(server, "write_artifact", {
+      path: "draft.md",
+      content: "line1\nline2\n",
+    });
+
+    const { data, isError } = await call(server, "diff_artifact", {
+      path: "draft.md",
+      from_seq: v1.data.seq,
+      to_seq: v2.data.seq,
+    });
+
+    expect(isError).toBe(false);
+    expect(data.identical).toBe(false);
+    expect(data.binary).toBe(false);
+    expect(data.pruned).toBe(false);
+    expect(data.patch).toContain("+line2");
+  });
+
+  it("reports identical:true with an empty patch rather than a no-op diff", async () => {
+    const server = new RoomServer(tempRoom());
+    await call(server, "join", { name: "scout", role: "worker" });
+
+    const v1 = await call(server, "write_artifact", { path: "draft.md", content: "same\n" });
+    const v2 = await call(server, "write_artifact", { path: "draft.md", content: "same\n" });
+
+    const { data } = await call(server, "diff_artifact", {
+      path: "draft.md",
+      from_seq: v1.data.seq,
+      to_seq: v2.data.seq,
+    });
+
+    expect(data.identical).toBe(true);
+    expect(data.binary).toBe(false);
+    expect(data.pruned).toBe(false);
+    expect(data.patch).toBe("");
+  });
+
+  it("reports binary:true instead of attempting a line diff", async () => {
+    const server = new RoomServer(tempRoom());
+    await call(server, "join", { name: "scout", role: "worker" });
+
+    const v1 = await call(server, "write_artifact", { path: "blob.bin", content: "text\n" });
+    const v2 = await call(server, "write_artifact", {
+      path: "blob.bin",
+      content: "abc\u0000def",
+    });
+
+    const { data } = await call(server, "diff_artifact", {
+      path: "blob.bin",
+      from_seq: v1.data.seq,
+      to_seq: v2.data.seq,
+    });
+
+    expect(data.identical).toBe(false);
+    expect(data.binary).toBe(true);
+    expect(data.pruned).toBe(false);
+    expect(data.patch).toMatch(/Binary files/);
+  });
+
+  it("reports pruned:true and refuses to guess, rather than showing an empty patch", async () => {
+    const room = tempRoom();
+    const server = new RoomServer(room);
+    await call(server, "join", { name: "scout", role: "worker" });
+
+    const v1 = await call(server, "write_artifact", { path: "draft.md", content: "one" });
+    const v2 = await call(server, "write_artifact", { path: "draft.md", content: "two" });
+    pruneVersions(room, { retain: 1 });
+
+    const { data, isError } = await call(server, "diff_artifact", {
+      path: "draft.md",
+      from_seq: v1.data.seq,
+      to_seq: v2.data.seq,
+    });
+
+    // Not an error result: the tool answered, and the answer is honestly
+    // "cannot compare" rather than a fabricated identical or empty diff.
+    expect(isError).toBe(false);
+    expect(data.identical).toBe(false);
+    expect(data.binary).toBe(false);
+    expect(data.pruned).toBe(true);
+    expect(data.patch).toMatch(/no longer retained/);
+  });
+
+  it("defaults to the last two recorded versions, same as atrium diff for a human", async () => {
+    const server = new RoomServer(tempRoom());
+    await call(server, "join", { name: "scout", role: "worker" });
+
+    await call(server, "write_artifact", { path: "draft.md", content: "one" });
+    const v2 = await call(server, "write_artifact", { path: "draft.md", content: "two" });
+    const v3 = await call(server, "write_artifact", { path: "draft.md", content: "three" });
+
+    const { data } = await call(server, "diff_artifact", { path: "draft.md" });
+
+    expect(data.fromSeq).toBe(v2.data.seq);
+    expect(data.toSeq).toBe(v3.data.seq);
+  });
+
+  it("diffs from_seq up to the current version when to_seq is left out, for a reviewer's submittedAtSeq", async () => {
+    const server = new RoomServer(tempRoom());
+    await call(server, "join", { name: "scout", role: "worker" });
+
+    const v1 = await call(server, "write_artifact", { path: "draft.md", content: "one" });
+    await call(server, "write_artifact", { path: "draft.md", content: "two" });
+    const v3 = await call(server, "write_artifact", { path: "draft.md", content: "three" });
+
+    const { data, isError } = await call(server, "diff_artifact", {
+      path: "draft.md",
+      from_seq: v1.data.seq,
+    });
+
+    expect(isError).toBe(false);
+    expect(data.fromSeq).toBe(v1.data.seq);
+    // Up through the current version, not just the last write — the whole
+    // scope of the work since v1, which is the point of this default.
+    expect(data.toSeq).toBe(v3.data.seq);
+  });
+
+  it("refuses to_seq without from_seq rather than guessing a starting point", async () => {
+    const server = new RoomServer(tempRoom());
+    await call(server, "join", { name: "scout", role: "worker" });
+
+    const v1 = await call(server, "write_artifact", { path: "draft.md", content: "one" });
+
+    const { data, isError } = await call(server, "diff_artifact", {
+      path: "draft.md",
+      to_seq: v1.data.seq,
+    });
+
+    expect(isError).toBe(true);
+    expect(data.error).toBe("invalid");
+    expect(data.message).toMatch(/from_seq/);
+  });
+
+  it("refuses a path with fewer than two versions and no explicit seqs, plainly rather than opaquely", async () => {
+    const server = new RoomServer(tempRoom());
+    await call(server, "join", { name: "scout", role: "worker" });
+    await call(server, "write_artifact", { path: "draft.md", content: "only one" });
+
+    const { data, isError } = await call(server, "diff_artifact", { path: "draft.md" });
+
+    expect(isError).toBe(true);
+    expect(data.error).toBe("invalid");
+    expect(data.message).toMatch(/only one recorded version/);
+  });
+
+  it("answers sensibly for a path never written, rather than throwing something opaque", async () => {
+    const server = new RoomServer(tempRoom());
+    await call(server, "join", { name: "scout", role: "worker" });
+
+    // No explicit seqs: nothing to compare, and the tool says so plainly.
+    const noSeqs = await call(server, "diff_artifact", { path: "never.md" });
+    expect(noSeqs.isError).toBe(true);
+    expect(noSeqs.data.error).toBe("invalid");
+    expect(noSeqs.data.message).toMatch(/no recorded version/);
+
+    // Explicit seqs on a path that never existed at either: both sides read
+    // as absent, and absent-vs-absent is a real, honest identical:true.
+    const explicit = await call(server, "diff_artifact", {
+      path: "never.md",
+      from_seq: 0,
+      to_seq: 0,
+    });
+    expect(explicit.isError).toBe(false);
+    expect(explicit.data.identical).toBe(true);
   });
 });
