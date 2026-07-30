@@ -102,6 +102,20 @@ npm run build
 npm test
 ```
 
+For local development, one command builds the project, creates `./demo-room`
+when needed, and starts the Watch UI:
+
+```sh
+npm run dev
+```
+
+It prints the localhost URL and automatically moves to the next available port
+if port 3000 is already occupied. Pass another room after `--` when needed:
+
+```sh
+npm run dev -- ./my-room
+```
+
 Make a room and say what the job is:
 
 ```sh
