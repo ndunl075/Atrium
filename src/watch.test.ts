@@ -121,20 +121,6 @@ describe("serveWatch", () => {
     expect(body).toContain('id="agent-floor"');
     expect(body).toContain("What every agent is doing right now");
     expect(body).toContain("Ready for work");
-    expect(body).toContain('class="room-visual"');
-    expect(body).toContain('src="/assets/atrium-courtyard.jpg"');
-    expect(body).toContain("Agents work apart");
-  });
-
-  it("serves the courtyard artwork locally as a real JPEG", async () => {
-    const handle = await start(tempRoom());
-    const res = await fetch(new URL("/assets/atrium-courtyard.jpg", handle.url));
-    const bytes = new Uint8Array(await res.arrayBuffer());
-
-    expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toBe("image/jpeg");
-    expect(bytes.byteLength).toBeGreaterThan(100_000);
-    expect([...bytes.slice(0, 3)]).toEqual([0xff, 0xd8, 0xff]);
   });
 
   it("shows an animated preview crew when the room has no real members yet", async () => {

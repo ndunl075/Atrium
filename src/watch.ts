@@ -28,19 +28,15 @@
  * than dressed up: anything running on the machine can read the room through
  * this port while it is open.
  *
- * The page is self-contained apart from one project-owned illustration served
- * by this same local process. It fetches nothing from the internet, so it
- * still works offline. That is partly principle — this project's dependency
- * budget is zero and a CDN link is a dependency wearing a disguise — and
- * partly the plain observation that a tool for watching local work should not
- * need the internet to draw itself.
+ * The page is self-contained. All CSS and JS are inline and nothing is fetched
+ * from the internet, so it still works offline. That is partly principle —
+ * this project's dependency budget is zero and a CDN link is a dependency
+ * wearing a disguise — and partly the plain observation that a tool for
+ * watching local work should not need the internet to draw itself.
  */
 
-import { existsSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { listArtifacts } from "./artifacts.js";
 import { getTask, listTasks } from "./board.js";
@@ -78,29 +74,6 @@ const DEFAULT_POLL_MS = 1000;
 
 /** Log lines shown on first paint. The stream carries everything after. */
 const INITIAL_LOG_LINES = 200;
-
-const COURTYARD_ASSET_PATH = "/assets/atrium-courtyard.jpg";
-
-/**
- * npm installs keep assets beside dist/, while source runs keep them beside
- * src/. A standalone binary has neither; it gets a CSS fallback instead of a
- * broken image.
- */
-function loadCourtyardArt(): Buffer | undefined {
-  const candidates: string[] = [resolve(process.cwd(), "assets", "atrium-courtyard.jpg")];
-  const moduleUrl: string | undefined = import.meta?.url;
-  if (typeof moduleUrl === "string") {
-    candidates.unshift(
-      resolve(dirname(fileURLToPath(moduleUrl)), "..", "assets", "atrium-courtyard.jpg"),
-    );
-  }
-  for (const path of candidates) {
-    if (existsSync(path)) return readFileSync(path);
-  }
-  return undefined;
-}
-
-const COURTYARD_ART = loadCourtyardArt();
 
 // ---------------------------------------------------------------------------
 // Escaping
@@ -493,11 +466,8 @@ header.masthead {
 }
 
 .room-masthead {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(300px, 0.86fr);
-  gap: 30px;
-  align-items: center;
-  min-height: 340px;
+  min-height: 0;
+  padding-block: 25px 23px;
 }
 
 .masthead-copy {
@@ -523,52 +493,6 @@ header.masthead {
   width: 28px;
   height: 2px;
   background: var(--ink);
-}
-
-.room-visual {
-  position: relative;
-  z-index: 2;
-  min-width: 0;
-  margin: 0;
-  transform: rotate(1.2deg);
-}
-
-.room-visual img,
-.courtyard-fallback {
-  display: block;
-  width: 100%;
-  aspect-ratio: 3 / 2;
-  object-fit: cover;
-  background: #ead99d;
-  border: 1.5px solid var(--ink);
-  border-radius: 18px 18px 6px 18px;
-  box-shadow: 5px 5px 0 var(--ink);
-}
-
-.room-visual figcaption {
-  position: absolute;
-  right: -8px;
-  bottom: -13px;
-  max-width: 220px;
-  padding: 8px 10px;
-  color: #fffdf7;
-  background: var(--ink);
-  border-radius: 10px 10px 3px 10px;
-  font-family: var(--mono);
-  font-size: 9px;
-  line-height: 1.35;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  transform: rotate(-2deg);
-}
-
-.courtyard-fallback {
-  position: relative;
-  overflow: hidden;
-  background:
-    radial-gradient(circle at 50% 50%, var(--ink) 0 11%, transparent 11.5%),
-    radial-gradient(circle at 50% 50%, transparent 0 24%, var(--ink) 24.5% 25.5%, transparent 26%),
-    conic-gradient(from 15deg, #e37a2f, var(--sun), #7e9357, #17324d, #e37a2f);
 }
 
 .agent-floor-shell {
@@ -1175,10 +1099,6 @@ button:hover {
   }
   .room-nav a { flex: 0 0 auto; padding: 8px 10px; }
   .room-nav a::before, .rail-note { display: none; }
-  .room-masthead {
-    grid-template-columns: minmax(0, 1fr) minmax(260px, 0.8fr);
-    min-height: 0;
-  }
   .agent-scene { grid-template-columns: 1fr; }
   .shared-core { min-height: 190px; border-radius: 30px 30px 9px 30px; }
 }
@@ -1194,9 +1114,6 @@ button:hover {
   .card { overflow-x: auto; }
   #log li { display: grid; grid-template-columns: 42px 1fr; }
   #log .line { grid-column: 1 / -1; padding-left: 0; }
-  .room-masthead { grid-template-columns: 1fr; gap: 22px; }
-  .room-visual { transform: none; }
-  .room-visual figcaption { right: 8px; }
   .agent-floor-shell { min-height: 0; padding: 15px; }
   .floor-toolbar { display: block; }
   .floor-mode { display: inline-block; margin-top: 10px; }
@@ -1743,14 +1660,6 @@ function renderRoomPage(room: Room): string {
       <span id="status" class="live">live</span>
     </div>
   </div>
-  <figure class="room-visual">
-    ${
-      COURTYARD_ART
-        ? `<img src="${COURTYARD_ASSET_PATH}" width="1200" height="800" alt="An illustrated atrium where work from many desks flows through one central shared board">`
-        : `<div class="courtyard-fallback" role="img" aria-label="Abstract paths meeting at one shared center"></div>`
-    }
-    <figcaption>Agents work apart. The room keeps the shared truth together.</figcaption>
-  </figure>
 </header>
 <div id="halted">${room.isHalted() ? HALTED_NOTE : ""}</div>
 <section id="agent-floor-section"><h2>Live agent floor</h2><div id="agent-floor">${renderAgentFloor(room, tasks)}</div></section>
@@ -2186,11 +2095,6 @@ function route(
 
   const url = new URL(req.url ?? "/", "http://localhost");
 
-  if (url.pathname === COURTYARD_ASSET_PATH && COURTYARD_ART) {
-    sendJpeg(res, 200, COURTYARD_ART);
-    return;
-  }
-
   if (url.pathname === "/") {
     sendHtml(res, 200, renderRoomPage(room));
     return;
@@ -2468,20 +2372,10 @@ function sendHtml(res: ServerResponse, status: number, html: string): void {
     "content-type": "text/html; charset=utf-8",
     // Nothing here is a stable representation: the board moves under you.
     "cache-control": "no-store",
-    // The one permitted image source is this same local server. Everything
-    // else stays closed, so injected remote scripts or images still fail.
+    // The page loads no external assets. Keep every network source closed so
+    // injected remote scripts or images fail even if escaping ever regresses.
     "content-security-policy":
-      "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; form-action 'self'",
+      "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'",
   });
   res.end(html);
-}
-
-function sendJpeg(res: ServerResponse, status: number, image: Buffer): void {
-  res.writeHead(status, {
-    "content-type": "image/jpeg",
-    "content-length": String(image.byteLength),
-    "cache-control": "public, max-age=3600",
-    "x-content-type-options": "nosniff",
-  });
-  res.end(image);
 }
