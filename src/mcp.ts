@@ -698,9 +698,9 @@ const TOOLS: ToolDefinition[] = [
         name: { type: "string", description: "What to call you in the log." },
         role: {
           type: "string",
-          enum: ["worker", "reviewer", "human"],
+          enum: ["worker", "reviewer", "manager", "human"],
           description:
-            "worker claims tasks and produces work; reviewer accepts or rejects other members' work and cannot claim; human does both and administers the room.",
+            "worker claims tasks and produces work; reviewer accepts or rejects other members' work and cannot claim; manager is a reviewer that can also take a stuck claim off somebody else; human does everything and administers the room. Only a human can un-freeze a task that has been escalated after too many rejections.",
         },
         manifest: {
           type: "string",

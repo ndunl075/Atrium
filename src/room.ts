@@ -28,6 +28,8 @@ import {
   type Member,
   type MemberId,
   type MemberRole,
+  isMemberRole,
+  memberRoles,
   type RoomConfig,
 } from "./types.js";
 import { newId, newToken, now, renameWithRetry, sha256 } from "./util.js";
@@ -198,9 +200,9 @@ export class Room {
 
     const name = options.name?.trim();
     if (!name) throw new InvalidError("A member needs a name.");
-    if (!isRole(options.role)) {
+    if (!isMemberRole(options.role)) {
       throw new InvalidError(
-        `Unknown role "${options.role}". Use worker, reviewer, or human.`,
+        `Unknown role "${options.role}". Use ${memberRoles().join(", ")}.`,
       );
     }
 
@@ -331,10 +333,6 @@ export class Room {
 }
 
 // ---------------------------------------------------------------------------
-
-function isRole(value: unknown): value is MemberRole {
-  return value === "worker" || value === "reviewer" || value === "human";
-}
 
 function basename(p: string): string {
   const parts = p.split(/[\\/]/).filter(Boolean);

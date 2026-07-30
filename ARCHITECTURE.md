@@ -27,7 +27,7 @@ This document was originally written before any code existed. Sections that have
 
 ## 0. Implementation status
 
-The honest state of the project as of 2026-07-30. 26.5k lines of TypeScript, 692 tests across 25 files, zero runtime dependencies.
+The honest state of the project as of 2026-07-30. 27.5k lines of TypeScript, 718 tests across 27 files, zero runtime dependencies.
 
 ### Built and tested
 
@@ -61,12 +61,12 @@ The honest state of the project as of 2026-07-30. 26.5k lines of TypeScript, 692
 | `expectedOutput` contracts on tasks | `src/types.ts`, `src/board.ts` | A contract for whoever accepts, never a gate. §12.3 |
 | `needs_input` task state | `src/board.ts`, `src/tasks.ts` | Ask, answer, withdraw. Claim held and frozen while waiting. §12.6 |
 | Event stream | `src/stream.ts` | `atrium tail`, and SSE at `GET /events`. Payload plus rendered line. §12.4 |
+| `manager` role | `src/types.ts`, `src/board.ts` | A reviewer that can free a stuck claim. Cannot un-freeze an escalation. §12.5 |
 
 ### Not built
 
 | Capability | Status | Section |
 |---|---|---|
-| `manager` role | `[PLANNED]` — next | §12.5 |
 | `atrium plan` — proposed board from the brief | `[PLANNED]` — blocked on a design question | §12.2 |
 | Agent cards for the roster | `[OPEN]` | §12.8 |
 | Long-lived polling workers | `[OPEN]` | §12.9 |
@@ -142,8 +142,9 @@ One qualification, added when forking shipped (§12.7): a Room created by `atriu
 A **Member** is any process holding a session token for a Room. Members are typed:
 
 - `worker` — claims tasks and produces artifacts
-- `reviewer` — can accept or reject completed tasks, cannot accept its own work
-- `human` — same permissions as reviewer, plus room administration
+- `reviewer` — can accept or reject completed tasks, cannot accept its own work, cannot claim
+- `manager` — a reviewer that can also release a claim somebody else is stuck on (§12.5)
+- `human` — everything above, plus room administration, and the only role that can un-freeze an escalated task
 
 `[ASSUMPTION]` Agents self-describe capabilities on join via a short capability manifest (free text plus tags). No formal capability ontology at v1. Formal capability schemas are the kind of thing that eats three weeks and produces a taxonomy nobody uses.
 
@@ -501,13 +502,21 @@ So a streamed event carries its `data` verbatim *alongside* the rendered line. C
 
 `[OPEN]` §13.7 argued this should export OpenTelemetry spans, so existing tools read it without an adapter. What shipped is the honest raw stream instead. A span needs a start, an end and a parent, and a room's events are points rather than intervals — deciding that a task's claim opens a span closed by its acceptance is a real modelling choice with a wrong answer available, and it should be made deliberately rather than folded into the transport.
 
-### 12.5 `manager` role `[PLANNED]`
+### 12.5 `manager` role `[SHIPPED]`
 
-CrewAI's hierarchical process has a manager agent that delegates and reviews. The mechanics already exist here — roles in §3.2, acceptance in §5 — but there is no member type whose job is fanning work out.
+CrewAI's hierarchical process has a manager agent that delegates and reviews. The mechanics already existed here — roles in §3.2, acceptance in §5 — with no member type whose job is fanning work out.
 
-Add `manager` to the roles in §3.2: may create tasks, and is the default reviewer for tasks that name none.
+**The role as originally specced turned out to be nearly a no-op, and that is worth recording.** It was to "create tasks, and be the default reviewer for tasks that name none". But `createTask` has never had a role check — *every* member can create tasks, including a worker — and `acceptance: reviewer` already means "some other member with reviewer rights". Both halves of the proposal were already true of `reviewer`, so building it as written would have added a second name for an existing role, which is worse than adding nothing.
 
-`[ASSUMPTION]` A manager is a member like any other, not a scheduler and not a control loop. It has no privileged view of the board and cannot accept its own submissions — the rule in §5 has no exceptions and this role does not become the first one. If rooms turn out to thrash without a real scheduler (§11), that is a separate decision to make deliberately, not something to let this role quietly become.
+What shipped instead is the one power a supervising agent actually lacked: **a manager is a reviewer that can also take a stuck claim off somebody else.** Freeing a task a crashed worker is sitting on is housekeeping rather than a judgement about the work, and needing a human awake for it is exactly the friction a supervisor is for. Everything else about `reviewer` carries over, including not being able to claim tasks.
+
+`[CONFIRMED]` A manager cannot un-freeze an escalated task. That freeze is §5's backstop — the thing that stops a task looping forever and makes a person look at it — and handing an agent the key would defeat the point of having one. `restartTask` stays `human` only, and there is a test asserting a manager is refused.
+
+`[CONFIRMED]` A manager cannot claim work, the same as a reviewer. This is what makes §5 *unreachable* for the role rather than merely enforced against it: a member that cannot claim can never be the submitter it would have to be in order to approve its own work.
+
+`[ASSUMPTION]` A manager is a member like any other, not a scheduler and not a control loop. It has no privileged view of the board. If rooms turn out to thrash without a real scheduler (§11), that is a separate decision to make deliberately, not something to let this role quietly become.
+
+**A bug this turned up.** `isRole` in `room.ts` carried its own hand-written list of role names, so adding `manager` to the type left the runtime check silently refusing it — the build was green and every join with the new role failed. Roles now go through a `Record<MemberRole, true>` registry in `types.ts`, the same trick §3.5's event types already used, so the union and the validator cannot drift apart again without failing the build.
 
 ### 12.6 `needs_input` task state `[SHIPPED]`
 

@@ -510,10 +510,13 @@ export function releaseTask(
         { taskId, state: task.state },
       );
     }
-    if (task.claimedBy !== actorId && actor.role !== "human") {
+    // A manager can take a claim off somebody else, the same as a human:
+    // freeing a task a crashed worker is sitting on is housekeeping, not a
+    // judgement about the work, so it does not need a person.
+    if (task.claimedBy !== actorId && actor.role !== "human" && actor.role !== "manager") {
       throw new PermissionError(
-        `${actor.name} does not hold the claim on ${taskId} and is not a ` +
-          "human, so only the member holding it can release it.",
+        `${actor.name} does not hold the claim on ${taskId} and is neither a ` +
+          "human nor a manager, so only the member holding it can release it.",
         { taskId, claimedBy: task.claimedBy, role: actor.role },
       );
     }

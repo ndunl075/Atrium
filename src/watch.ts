@@ -51,7 +51,7 @@ import { isAtriumError } from "./errors.js";
 import type { Room } from "./room.js";
 import { diffArtifact, listVersions } from "./snapshots.js";
 import { blockingDependencies } from "./tasks.js";
-import type { EventType, MemberId, Task, TaskId, TaskState } from "./types.js";
+import type { EventType, MemberId, MemberRole, Task, TaskId, TaskState } from "./types.js";
 
 export interface ServeWatchOptions {
   /** Defaults to 127.0.0.1. Only change this deliberately. */
@@ -1276,7 +1276,7 @@ type AgentFloorStatus = "working" | "reviewing" | "waiting" | "ready" | "away";
 
 interface AgentFloorItem {
   name: string;
-  role: "worker" | "reviewer" | "human";
+  role: MemberRole;
   status: AgentFloorStatus;
   action: string;
   detail: string;
@@ -1347,7 +1347,10 @@ function memberFloorItem(
     name: member.name,
     role: member.role,
     status: "ready",
-    action: member.role === "human" ? "Coordinating room" : "Ready for work",
+    action:
+      member.role === "human" || member.role === "manager"
+        ? "Coordinating room"
+        : "Ready for work",
     detail: tasks.some((task) => task.state === "open")
       ? "An open task is available."
       : "Watching the shared board.",

@@ -573,7 +573,7 @@ export function cmdLog(argv: string[], sink: Sink): number {
 // invite
 // ---------------------------------------------------------------------------
 
-const INVITE_HELP = `Usage: atrium invite --name <name> [--role worker|reviewer|human] [dir]
+const INVITE_HELP = `Usage: atrium invite --name <name> [--role worker|reviewer|manager|human] [dir]
 
 Adds a member and prints their session token. The token is shown exactly
 once here — it is not stored anywhere it can be read back out, so save it
@@ -581,7 +581,10 @@ before you close this terminal.
 
 Options:
   --name <name>   the member's name (required)
-  --role <role>   worker, reviewer, or human (default: worker)
+  --role <role>   worker, reviewer, manager, or human (default: worker)
+                    manager is a reviewer that can also release somebody
+                    else's stuck claim; only a human can un-freeze an
+                    escalated task
   --help, -h      show this help
 `;
 

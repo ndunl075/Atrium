@@ -270,7 +270,7 @@ export function reviewTask(
           { taskId },
         );
       case "reviewer":
-        room.requireRole(actorId, ["reviewer", "human"]);
+        room.requireRole(actorId, ["reviewer", "manager", "human"]);
         break;
       case "human":
         room.requireRole(actorId, ["human"]);

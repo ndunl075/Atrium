@@ -14,11 +14,40 @@ export type TaskId = string;
 // ---------------------------------------------------------------------------
 
 /**
- * - `worker`   claims tasks and produces artifacts
- * - `reviewer` accepts or rejects finished work, but never its own
- * - `human`    everything a reviewer can do, plus running the room
+ * What a member is allowed to do.
+ *
+ * `worker` produces work. `reviewer` judges other members' work and does not
+ * produce any. `manager` is a reviewer that can also unstick the board —
+ * releasing a claim somebody else is sitting on — for a supervising agent
+ * that should not need a human for routine housekeeping. `human` is all of
+ * that plus room administration, and is the only role that can un-freeze an
+ * escalated task, because that freeze is §5's backstop and handing an agent
+ * the key to it would defeat the point of having one.
  */
-export type MemberRole = "worker" | "reviewer" | "human";
+export type MemberRole = "worker" | "reviewer" | "manager" | "human";
+
+/**
+ * Every role, registered once so the runtime check and the type cannot drift
+ * apart. `Record<MemberRole, true>` is what does the work: adding a role to
+ * the union without adding it here fails the build, which is exactly what did
+ * not happen when `manager` was added and `isRole` kept silently refusing it.
+ * The event type registry below uses the same trick for the same reason.
+ */
+const MEMBER_ROLE_REGISTRY: Record<MemberRole, true> = {
+  worker: true,
+  reviewer: true,
+  manager: true,
+  human: true,
+};
+
+/** Every role, for validation and for error messages that list the options. */
+export function memberRoles(): MemberRole[] {
+  return Object.keys(MEMBER_ROLE_REGISTRY) as MemberRole[];
+}
+
+export function isMemberRole(value: unknown): value is MemberRole {
+  return typeof value === "string" && Object.hasOwn(MEMBER_ROLE_REGISTRY, value);
+}
 
 export interface Member {
   id: MemberId;
