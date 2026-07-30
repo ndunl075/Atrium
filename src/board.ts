@@ -23,6 +23,7 @@
  */
 
 import { ConflictError, InvalidError, NotFoundError, PermissionError } from "./errors.js";
+import { resolveArtifact, toArtifactPath } from "./paths.js";
 import { Room } from "./room.js";
 import { foldTasks, isClaimable } from "./tasks.js";
 import type {
@@ -58,6 +59,8 @@ export interface CreateTaskInput {
   title: string;
   description?: string;
   expectedOutput?: ExpectedOutput;
+  /** Paths this task is meant to produce. Optional; see `Task.produces`. */
+  produces?: string[];
   dependsOn?: TaskId[];
   acceptance?: Acceptance;
 }
@@ -95,6 +98,7 @@ export function createTask(
   if (!title) throw new InvalidError('A task needs a non-empty "title".');
 
   const expectedOutput = normalizeExpectedOutput(input.expectedOutput);
+  const produces = normalizeProduces(room, input.produces);
   const acceptance: Acceptance = input.acceptance ?? { kind: "reviewer" };
   if (acceptance.kind === "none" && !room.config.allowUncheckedAcceptance) {
     throw new InvalidError(
@@ -151,12 +155,43 @@ export function createTask(
       title,
       description: input.description ?? "",
       ...(expectedOutput !== undefined ? { expectedOutput } : {}),
+      ...(produces !== undefined ? { produces } : {}),
       dependsOn,
       acceptance,
     });
 
     return requireTask(readBoard(room), taskId);
   });
+}
+
+/**
+ * Validates `produces` and normalises each path the same way a write would.
+ *
+ * Resolved through `toArtifactPath` rather than trusted as typed, so a task
+ * that declares `./draft.md` and a write of `draft.md` are the same path.
+ * Without that, the gap report in `producedGaps` would fire on a file that is
+ * sitting right there under a different spelling — a false alarm about the
+ * one thing this feature exists to notice.
+ */
+function normalizeProduces(room: Room, value: string[] | undefined): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    throw new InvalidError('"produces" must be a list of paths this task will write.');
+  }
+  if (value.length === 0) return undefined;
+
+  const paths = value.map((entry) => {
+    if (typeof entry !== "string" || entry.trim() === "") {
+      throw new InvalidError(
+        `Every "produces" entry must be a non-empty path (got ${JSON.stringify(entry)}).`,
+      );
+    }
+    // Throws for a path escaping the room or reaching into .atrium, the same
+    // as writing there would.
+    return toArtifactPath(room.dir, resolveArtifact(room.dir, entry.trim()));
+  });
+
+  return [...new Set(paths)];
 }
 
 function normalizeExpectedOutput(value: ExpectedOutput | undefined): ExpectedOutput | undefined {

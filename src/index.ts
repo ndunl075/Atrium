@@ -204,6 +204,12 @@ export {
   type AgentCard,
   type CardSkill,
 } from "./cards.js";
+export {
+  artifactLineage,
+  producedGaps,
+  type LineageEntry,
+  type ProducedGap,
+} from "./lineage.js";
 export { parseYaml, type YamlValue, type YamlParseOptions } from "./yaml.js";
 export {
   parseJob,

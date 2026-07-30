@@ -129,6 +129,22 @@ export interface Task {
   title: string;
   description: string;
   expectedOutput?: ExpectedOutput;
+  /**
+   * Paths this task is meant to produce (ARCHITECTURE.md §13.6, from
+   * Dagster's software-defined assets).
+   *
+   * Sits *alongside* `dependsOn` rather than replacing it, which is the
+   * answer to the open question that section carried. Some work genuinely
+   * produces no file — a review, a decision, a sign-off whose whole output is
+   * a verdict — and a model where every task had to name an artifact would
+   * make those awkward or fake. So this is optional, and a task without it is
+   * not a lesser task.
+   *
+   * It is a declaration of intent, never a gate: `producedGaps` reports a
+   * task that promised a file and did not write it, for whoever is deciding
+   * whether the work is finished. §5 keeps that decision with a member.
+   */
+  produces?: string[];
   /** Task ids that must be accepted before this one can be worked on. */
   dependsOn: TaskId[];
   acceptance: Acceptance;
@@ -224,6 +240,7 @@ export interface EventMap {
     title: string;
     description: string;
     expectedOutput?: ExpectedOutput;
+    produces?: string[];
     dependsOn: TaskId[];
     acceptance: Acceptance;
   };

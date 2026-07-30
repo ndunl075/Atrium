@@ -217,6 +217,9 @@ export class RoomServer {
           ...(args["expected_output"] !== undefined
             ? { expectedOutput: args["expected_output"] as ExpectedOutput }
             : {}),
+          ...(args["produces"] !== undefined
+            ? { produces: strArray(args, "produces") }
+            : {}),
           dependsOn: strArray(args, "depends_on"),
           ...(args["acceptance"]
             ? { acceptance: args["acceptance"] as Acceptance }

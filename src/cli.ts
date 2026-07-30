@@ -28,6 +28,7 @@ import {
   applyConfigChange,
   agentCards,
   applyJob,
+  artifactLineage,
   briefAt,
   briefDrift,
   briefHistory,
@@ -627,6 +628,68 @@ export function cmdInvite(argv: string[], sink: Sink): number {
 // ---------------------------------------------------------------------------
 // replay
 // ---------------------------------------------------------------------------
+
+const LINEAGE_HELP = `Usage: atrium lineage <path> [dir]
+
+Every version of a file, and the task that produced it.
+
+"atrium history" says what changed and when. This says which piece of work
+each version came out of — including which attempt, so the draft that was
+rejected reads differently from the one that replaced it.
+
+Nothing records this: it is derived from the log. A write says who made it
+and a claim says what they were holding at the time, both already in order,
+so this works on rooms created before the idea existed. A write made while
+holding no claim is a real case, not a gap, and shows with no task.
+
+Options:
+  --json       print machine-readable JSON instead
+  --help, -h   show this help
+`;
+
+export function cmdLineage(argv: string[], sink: Sink): number {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: { help: { type: "boolean", short: "h" }, json: { type: "boolean" } },
+    allowPositionals: true,
+  });
+  if (values.help) {
+    sink.out(LINEAGE_HELP);
+    return 0;
+  }
+
+  const path = positionals[0];
+  if (path === undefined) {
+    sink.err('lineage needs a path, e.g. "atrium lineage draft.md ./room".');
+    return 2;
+  }
+
+  const room = openRoom(positionals[1] ?? process.cwd());
+  try {
+    const entries = artifactLineage(room, path);
+    if (values.json) {
+      sink.out(JSON.stringify(entries, null, 2));
+      return 0;
+    }
+    if (entries.length === 0) {
+      sink.out(dim(`No version of ${path} has ever been written in this room.`));
+      return 0;
+    }
+
+    const names = new Map(room.roster().map((m) => [m.id, m.name] as const));
+    for (const entry of entries) {
+      const who = names.get(entry.author) ?? entry.author;
+      const from =
+        entry.taskId === undefined
+          ? dim("  (no task held)")
+          : `  ${entry.taskTitle}${entry.attempt! > 0 ? ` (attempt ${entry.attempt! + 1})` : ""}`;
+      sink.out(`#${entry.seq}  ${entry.ts}  ${entry.kind} by ${who}${from}`);
+    }
+    return 0;
+  } finally {
+    room.close();
+  }
+}
 
 const TAIL_HELP = `Usage: atrium tail [dir] [options]
 
@@ -3121,6 +3184,7 @@ Commands:
   replay <seq> [dir]    the board as it looked at that point in the log
   tail [dir]            events as they happen, as JSON for tools or lines for people
   fork <target> [dir]   a new room that is this one at --at <seq>, free to go differently
+  lineage <path> [dir]  every version of a file, and the task that produced it
   context [dir]         the shared brief and its token total; --pin/--unpin to curate it
   search <query> [dir]  full-text search over the room's artifacts
   artifacts [dir]       every artifact the room currently has: size, last write, author
@@ -3174,6 +3238,8 @@ function dispatch(argv: string[], sink: Sink): number {
       return cmdReplay(rest, sink);
     case "fork":
       return cmdFork(rest, sink);
+    case "lineage":
+      return cmdLineage(rest, sink);
     case "context":
       return cmdContext(rest, sink);
     case "search":

@@ -47,6 +47,8 @@ export interface JobTask {
   title: string;
   description?: string;
   expectedOutput?: ExpectedOutput;
+  /** Paths this task is meant to write. Optional; see `Task.produces`. */
+  produces?: string[];
   /** Other job keys, not task ids — the file is written before ids exist. */
   dependsOn: string[];
   acceptance?: Acceptance;
@@ -175,6 +177,7 @@ function parseTask(key: string, value: YamlValue, source: string): JobTask {
 
   const description = optionalString(value["description"], `task "${key}" description`, source);
   const expectedOutput = parseExpectedOutput(value["expectedOutput"], key, source);
+  const produces = parseProduces(value["produces"], where);
   const dependsOn = parseDependsOn(value["dependsOn"], where);
   const acceptance = parseAcceptance(value["acceptance"], where);
 
@@ -183,9 +186,30 @@ function parseTask(key: string, value: YamlValue, source: string): JobTask {
     title: title.trim(),
     ...(description !== undefined ? { description } : {}),
     ...(expectedOutput !== undefined ? { expectedOutput } : {}),
+    ...(produces !== undefined ? { produces } : {}),
     dependsOn,
     ...(acceptance !== undefined ? { acceptance } : {}),
   };
+}
+
+/** `produces: draft.md` or `produces: [draft.md, sources.md]`. */
+function parseProduces(value: YamlValue | undefined, where: string): string[] | undefined {
+  if (value === undefined || value === null) return undefined;
+
+  // One path is far more common than several, and writing it without the
+  // brackets is the obvious thing to try — the same shorthand dependsOn takes.
+  const list = Array.isArray(value) ? value : [value];
+  if (list.length === 0) return undefined;
+
+  return list.map((entry) => {
+    if (typeof entry !== "string" || entry.trim() === "") {
+      throw new InvalidError(
+        `${where}: every "produces" entry must be a path this task will write, got ` +
+          `${describeKind(entry)}.`,
+      );
+    }
+    return entry.trim();
+  });
 }
 
 function parseExpectedOutput(
@@ -412,6 +436,7 @@ export function applyJob(room: Room, actorId: MemberId, job: Job): AppliedJob {
     const created = createTask(room, actorId, {
       title: task.title,
       ...(task.description !== undefined ? { description: task.description } : {}),
+      ...(task.produces !== undefined ? { produces: task.produces } : {}),
       ...(task.expectedOutput !== undefined ? { expectedOutput: task.expectedOutput } : {}),
       dependsOn: task.dependsOn.map((key) => {
         const id = taskIds.get(key);

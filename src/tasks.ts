@@ -68,6 +68,7 @@ export function foldTasks(
           ...(event.data.expectedOutput !== undefined
             ? { expectedOutput: event.data.expectedOutput }
             : {}),
+          ...(event.data.produces !== undefined ? { produces: event.data.produces } : {}),
           dependsOn: event.data.dependsOn,
           acceptance: event.data.acceptance,
           state: "open",

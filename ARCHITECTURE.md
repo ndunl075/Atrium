@@ -27,7 +27,7 @@ This document was originally written before any code existed. Sections that have
 
 ## 0. Implementation status
 
-The honest state of the project as of 2026-07-30. 28.5k lines of TypeScript, 742 tests across 28 files, zero runtime dependencies.
+The honest state of the project as of 2026-07-30. 29.5k lines of TypeScript, 760 tests across 29 files, zero runtime dependencies.
 
 ### Built and tested
 
@@ -65,13 +65,14 @@ The honest state of the project as of 2026-07-30. 28.5k lines of TypeScript, 742
 | Named context blocks | `src/context.ts` | `##` sections of the brief, largest first, named in overflow messages. §12.10 |
 | Agent cards for the roster | `src/cards.ts` | A2A-shaped, opt-in, every card marked self-reported. §12.8 |
 | Long-lived polling workers | `src/runner.ts` | `"poll": true`. Told no assignment, so the runner holds no plan. §12.9 |
+| Artifact lineage and `produces` | `src/lineage.ts` | `atrium lineage`. Derived from the log; `produces` sits alongside `dependsOn`. §13.6 |
 
 ### Not built
 
 | Capability | Status | Section |
 |---|---|---|
 | `atrium plan` — proposed board from the brief | `[PLANNED]` — blocked on a design question | §12.2 |
-| Artifact-first tasks | `[OPEN]` — possible v1 shape | §13.6 |
+| Dependency graph derived from `produces`/`consumes` | `[OPEN]` | §13.6 |
 | Embeddings / semantic search | Deliberately deferred | §4 |
 | Multi-machine rooms | Deliberately deferred | §9 |
 | Enforced (non-advisory) cost caps | `[OPEN]` — may be unsolvable here | §6 |
@@ -681,13 +682,28 @@ Deterministic replay from event history, with long-lived workers polling task qu
 
 Data orchestration built on software-defined assets: rather than orchestrating tasks, you declare the asset that should exist and what produces it, and get lineage of actual artifacts instead of lineage of task runs. Freshness and staleness policies attach to the asset.
 
-**Taken:** nothing yet, and this is the one that might matter most later, so it is recorded rather than queued.
+**Taken:** lineage in full, and the declaration in an additive form. `src/lineage.ts`, `Task.produces`, and `atrium lineage <path>`.
 
-Atrium's board is task-first and its artifacts are, in Dagster's terms, untracked side effects: a task says what to do, and `dependsOn` is written by hand between tasks. Dagster's inversion would have a task declare `produces: draft.md`, from which the dependency graph *derives* — draft depends on research because it reads what research wrote. Combined with the content-addressed store, that yields real lineage: which task, at which attempt, produced which version of which file.
+This was recorded as "a large change to the core model, which should sit in a design doc for a while". Building it showed the change **splits in two, and only one half touches the model at all.**
 
-That is a strong fit with what already exists and a large change to the core model, which is exactly the combination that should sit in a design doc for a while before anyone writes code. It is the most plausible shape of a v1 that is not just v0.3 with more commands.
+**The fact needs nothing new.** An `artifact.written` event records who wrote a path and when; a `task.claimed` event records who was holding what. Both are already in the log, in order — so "which task, at which attempt, produced this version" is a *derivation*, not a field anyone has to remember to fill in. `atrium lineage` therefore works on every room that already exists, including ones created before the idea, because it reads history rather than requiring history to have been annotated. On the demo room:
 
-`[OPEN]` Whether artifact-first tasks replace `dependsOn` or sit alongside it. Some work genuinely produces no file — a review, a decision — and a model where everything must produce an artifact would make those awkward or fake.
+```
+history:  #18  500 bytes        #22  556 bytes
+lineage:  #18  Write the piece  #22  Write the piece (attempt 2)
+```
+
+History says two versions. Lineage says which one was the draft that came back — which is the question anybody actually has.
+
+`[CONFIRMED]` Derived rather than recorded. Putting the task id on `artifact.written` would be easier to read and would be a second copy of something the log already implies, which is the drift §3.5 exists to prevent. It also has no honest answer for a member writing a file while holding no claim, which is legitimate and now simply reads as lineage with no task.
+
+**The declaration is the model change**, and it is deliberately small: `Task.produces` is an optional list of paths, carried through job files, MCP and the CLI.
+
+`[CONFIRMED]` **It sits alongside `dependsOn` rather than replacing it** — the open question this section carried, resolved by the objection the section itself raised. Some work genuinely produces no file: a review, a decision, a sign-off whose whole output is a verdict. A model where every task had to name an artifact would make those awkward or fake, so a task without `produces` is not a lesser task. The dependency graph stays hand-written.
+
+`[CONFIRMED]` `producedGaps` reports a task that promised a file and submitted without writing it, and it is a **report, not a gate**. §5 is careful about who decides a task is finished, and "the file it promised is missing" is evidence for whoever is deciding rather than a verdict of its own — a task can legitimately change its mind about what it needed to write, and that is a conversation.
+
+`[OPEN]` Deriving the dependency graph from `produces` — draft depends on research because it reads what research wrote — is the part still not built, and it needs a `consumes` to pair with `produces` before it means anything. That is the version that would genuinely invert the board, and it is worth having the declaration in use for a while first.
 
 ### 13.7 OpenAI Agents SDK — tracing
 
