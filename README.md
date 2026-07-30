@@ -25,9 +25,10 @@ Atrium does not define agent personalities, prompts, reasoning loops, or model
 providers. Agents arrive with those capabilities and connect to a room through
 MCP or a process adapter.
 
-> **Development status:** Alpha (`0.2.0`). Core room coordination, task
-> acceptance, artifact history, replay, the Watch UI, and the optional runner
-> are functional. Interfaces may still change.
+> **Development status:** Alpha (`0.3.0`). Room coordination, task acceptance,
+> artifact history and lineage, replay, forking, the Watch UI, event
+> streaming, and the optional runner are functional. Interfaces may still
+> change.
 
 ## Design principles
 
@@ -62,6 +63,7 @@ reached.
 - Artifact leases that prevent concurrent writers from silently overwriting
   one another.
 - Command, reviewer, and human acceptance policies.
+- Worker, reviewer, manager, and human roles.
 - Versioned artifact content with history and unified diffs.
 - Ordered event history and point-in-time board replay.
 - Forking a room from any point in its log, with its history and artifact
@@ -69,7 +71,11 @@ reached.
 - MCP access over stdio or authenticated HTTP.
 - Read-only Watch UI with live task, member, artifact, and agent-activity
   views.
-- Optional process runner for bounded worker dispatch.
+- Optional process runner for bounded worker dispatch, or long-lived workers
+  that claim their own work.
+- A `needs_input` state, so a blocked worker can ask instead of guessing.
+- Event streaming over stdout or Server-Sent Events, for external tooling.
+- Artifact lineage: which task, at which attempt, produced which version.
 - Advisory per-room and per-member cost accounting.
 - Storage verification, garbage collection, and explicit history pruning.
 
@@ -317,6 +323,40 @@ node dist/cli.js context --at 12 ./newsroom     # what the brief said back then
 node dist/cli.js context --record ./newsroom    # capture an edit right now
 ```
 
+### Follow a room from another tool
+
+```sh
+node dist/cli.js tail ./newsroom --json          # one JSON object per event
+node dist/cli.js tail ./newsroom                 # the same, as sentences
+```
+
+Each event carries its own payload alongside the rendered line, so a tool
+branches on fields while a person reads the sentence. `atrium serve --http`
+also exposes the same stream as Server-Sent Events at `/events`, authenticated
+with the same bearer token as the MCP route.
+
+Atrium emits the stream and charts nothing; pointing something that does chart
+at it is the intended use.
+
+### Trace a file back to the work that made it
+
+```sh
+node dist/cli.js lineage draft.md ./newsroom
+```
+
+`history` says what changed and when. `lineage` says which task each version
+came out of, and which attempt — so the draft that was rejected reads
+differently from the one that replaced it:
+
+```text
+#18  written by scout  Write the piece
+#22  written by scout  Write the piece (attempt 2)
+```
+
+Nothing records this; it is derived from the log, so it works on rooms created
+before the feature existed. A task can also declare `produces: [draft.md]` to
+say up front what it means to write.
+
 ### Fork a room and try it differently
 
 `replay` shows how the board looked at a point in the log. `fork` continues
@@ -349,6 +389,22 @@ is not:
 Session tokens are not copied. Members exist in the fork's history, but nobody
 can authenticate as one until you run `atrium invite` against it.
 
+### When a worker gets stuck
+
+A worker that cannot finish without something — an ambiguity in the brief, a
+decision only a person can make — says so with `ask_for_input` instead of
+guessing. Guessing is what produces plausible, wrong work, and it is what an
+LLM will do if the only alternatives are abandoning the task or sitting on it.
+
+The task moves to `needs_input` and keeps its claim, which stops expiring, so
+asking costs nothing even if the answer takes until tomorrow. Answer it with
+`atrium task answer`, or from another agent with `provide_input`. Whoever
+asked cannot answer their own question; if they work it out themselves they
+withdraw it.
+
+The question and the answer both go on the board, not into a message, so a
+worker picking the task up later reads the answer out of the room.
+
 ### Administer tasks
 
 ```sh
@@ -358,6 +414,7 @@ node dist/cli.js task review <task-id> ./newsroom --accept
 node dist/cli.js task review <task-id> ./newsroom --reject --reason "Citation is unavailable"
 node dist/cli.js task release <task-id> ./newsroom
 node dist/cli.js task unblock <task-id> ./newsroom
+node dist/cli.js task answer <task-id> ./newsroom --text "800 words, not 1500"
 ```
 
 Administrative task commands use an automatically provisioned CLI member with
@@ -414,13 +471,16 @@ Primary tools include:
 
 - `join`
 - `get_context`
-- `list_members`
+- `list_members` — pass `cards: true` for A2A-shaped capability cards
 - `list_tasks`
 - `claim_task`
 - `read_artifact`
 - `write_artifact`
 - `submit_task`
 - `review_task`
+- `ask_for_input` — say you are stuck rather than guessing
+- `provide_input` — answer somebody else's question
+- `withdraw_question`
 - `post_note`
 - `read_log`
 

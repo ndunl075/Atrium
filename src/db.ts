@@ -90,10 +90,24 @@ export function openDb(path: string): Db {
 
   const db = new DatabaseSync(path);
 
-  // Readers never block the writer, and a writer that finds the lock held waits
-  // a few seconds instead of failing on the spot.
-  if (path !== ":memory:") db.exec("PRAGMA journal_mode = WAL");
+  // busy_timeout goes first, and the order is the whole point rather than a
+  // tidiness preference.
+  //
+  // Setting the journal mode takes a lock on the database. Every other room in
+  // this project is opened by several processes at once — that is what §6's
+  // atomic claim exists for — so another process holding that lock at this
+  // moment is ordinary, not exceptional. With no busy timeout in effect yet,
+  // the WAL pragma failed immediately with "database is locked", and a room
+  // that could not be *opened* took down whatever was opening it: a worker, or
+  // `atrium serve` dying before it answered a single message.
+  //
+  // The timeout was always here. It was simply set one line too late to cover
+  // the one statement most likely to meet a lock.
   db.exec("PRAGMA busy_timeout = 5000");
+
+  // Readers never block the writer, and a writer that finds the lock held now
+  // waits a few seconds instead of failing on the spot.
+  if (path !== ":memory:") db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA synchronous = NORMAL");
   db.exec("PRAGMA foreign_keys = ON");
 

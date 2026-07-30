@@ -16,7 +16,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 
@@ -44,6 +44,16 @@ export function writeToken(path, token) {
   writeFileSync(path, token, "utf8");
 }
 
+/** Drops a token that no longer works, so the next launch does not retry it. */
+export function forgetToken(path) {
+  try {
+    rmSync(path, { force: true });
+  } catch {
+    // Not being able to delete it is not worth failing over: the next launch
+    // will try it, fail the same way, and join fresh again.
+  }
+}
+
 /**
  * Open a room as a member that persists across launches.
  *
@@ -55,7 +65,32 @@ export function writeToken(path, token) {
  */
 export async function openRoomAs(options) {
   const path = tokenPathFor(options.roomDir, options.name);
-  const session = await openRoom({ ...options, token: readToken(path) });
+  const saved = readToken(path);
+
+  if (saved !== undefined) {
+    try {
+      return await openRoom({ ...options, token: saved });
+    } catch (err) {
+      // A saved token is an optimisation — it keeps one worker as one member
+      // across restarts — and an optimisation must never be the thing that
+      // stops the work. A token file can go stale in ordinary use: the room
+      // was recreated, or forked (forks deliberately do not copy tokens), or
+      // the file was written by a run against a different room. Every one of
+      // those left the worker dead on arrival before this.
+      //
+      // So: say what happened, forget the token, and join as somebody new.
+      // The cost is an extra member on the roster; the alternative is no work
+      // getting done at all.
+      console.error(
+        `[${options.name}] saved session token did not work, joining fresh instead — ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      forgetToken(path);
+    }
+  }
+
+  const session = await openRoom({ ...options, token: undefined });
   if (session.token) writeToken(path, session.token);
   return session;
 }
@@ -81,11 +116,29 @@ export async function openRoom({ cliPath, roomDir, name, role, manifest, token }
     token === undefined
       ? [cliPath, "serve", roomDir]
       : [cliPath, "serve", roomDir, "--token", token],
-    { stdio: ["pipe", "pipe", "inherit"], windowsHide: true },
+    // stderr is captured rather than inherited so that a server which dies at
+    // startup can say why. Inheriting looks tidier and loses the one piece of
+    // information worth having when this goes wrong on a machine you are not
+    // sitting at.
+    { stdio: ["pipe", "pipe", "pipe"], windowsHide: true },
   );
+
+  let stderr = "";
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+    process.stderr.write(chunk);
+  });
 
   const pending = new Map();
   let nextId = 1;
+
+  // Without this, a spawn that fails outright raises an unhandled 'error' and
+  // the process dies with a stack trace instead of a sentence.
+  let spawnError;
+  child.once("error", (err) => {
+    spawnError = err;
+  });
 
   const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
   lines.on("line", (line) => {
@@ -108,9 +161,17 @@ export async function openRoom({ cliPath, roomDir, name, role, manifest, token }
   });
 
   const closed = new Promise((resolve) => child.once("close", resolve));
-  child.once("close", () => {
+  child.once("close", (code) => {
     for (const waiter of pending.values()) {
-      waiter.reject(new Error("The room server exited before answering."));
+      // Everything known about why, in one sentence: the exit code, whatever
+      // the server managed to say, and whether it failed to start at all.
+      waiter.reject(
+        new Error(
+          `The room server exited (code ${code}) before answering.` +
+            (spawnError ? ` It could not be started: ${spawnError.message}.` : "") +
+            (stderr.trim() ? ` It said: ${stderr.trim()}` : " It said nothing."),
+        ),
+      );
     }
     pending.clear();
   });
@@ -122,11 +183,28 @@ export async function openRoom({ cliPath, roomDir, name, role, manifest, token }
       child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
     });
 
-  await request("initialize", {
-    protocolVersion: PROTOCOL_VERSION,
-    capabilities: {},
-    clientInfo: { name: "atrium-demo-worker", version: "0" },
-  });
+  /**
+   * Anything that fails before this function returns leaves a server process
+   * with nobody holding it, and — worse — an open handle on the room's
+   * database. `openRoomAs` retries after a failed token, so a leaked server
+   * would still be holding the room when the retry arrives.
+   */
+  const abandon = async (err) => {
+    child.stdin.end();
+    child.kill();
+    await closed;
+    throw err;
+  };
+
+  try {
+    await request("initialize", {
+      protocolVersion: PROTOCOL_VERSION,
+      capabilities: {},
+      clientInfo: { name: "atrium-demo-worker", version: "0" },
+    });
+  } catch (err) {
+    await abandon(err);
+  }
 
   /**
    * Calls a tool and hands back the parsed result.
@@ -157,14 +235,19 @@ export async function openRoom({ cliPath, roomDir, name, role, manifest, token }
 
   // A rejoining connection is already authenticated by --token, so there is
   // nothing to join; ask for the brief directly instead.
-  const joined =
-    token === undefined
-      ? await must("join", {
-          name,
-          role,
-          ...(manifest !== undefined ? { manifest } : {}),
-        })
-      : { context: await must("get_context") };
+  let joined;
+  try {
+    joined =
+      token === undefined
+        ? await must("join", {
+            name,
+            role,
+            ...(manifest !== undefined ? { manifest } : {}),
+          })
+        : { context: await must("get_context") };
+  } catch (err) {
+    await abandon(err);
+  }
 
   return {
     joined,

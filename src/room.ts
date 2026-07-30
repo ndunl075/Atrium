@@ -10,6 +10,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 
@@ -207,18 +208,33 @@ export class Room {
     }
 
     const memberId = newId("member");
-    this.log.append(memberId, "member.joined", {
-      memberId,
-      name,
-      role: options.role,
-      manifest: options.manifest ?? "",
-      tags: options.tags ?? [],
-    });
-
     const token = newToken();
-    const tokens = this.readTokens();
-    tokens[sha256(token)] = memberId;
-    writeJson(this.paths.tokens, tokens, 0o600);
+
+    // The token file is read, changed and written back, and two agents joining
+    // at the same moment is ordinary rather than exceptional — so without a
+    // lock the second write silently drops the first member's token. They join
+    // successfully, they are on the roster, and their credential is simply
+    // gone; the failure only shows up later as "that session token is not
+    // valid", a long way from the cause.
+    //
+    // There is already a lock that spans processes: SQLite's write lock, taken
+    // by `BEGIN IMMEDIATE` for the whole span of a log transaction. Appending
+    // the join and updating the file inside one transaction borrows it, which
+    // is why this is a transaction rather than a mutex of its own — a second
+    // locking scheme would be a second thing to get wrong.
+    this.log.transaction(() => {
+      this.log.append(memberId, "member.joined", {
+        memberId,
+        name,
+        role: options.role,
+        manifest: options.manifest ?? "",
+        tags: options.tags ?? [],
+      });
+
+      const tokens = this.readTokens();
+      tokens[sha256(token)] = memberId;
+      writeJson(this.paths.tokens, tokens, 0o600);
+    });
 
     return { member: this.member(memberId), token };
   }
@@ -341,7 +357,35 @@ function basename(p: string): string {
 
 /** Writes via a temporary file so an interrupted write cannot truncate. */
 function writeJson(path: string, value: unknown, mode?: number): void {
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n", { encoding: "utf8", mode });
-  renameWithRetry(tmp, path);
+  // The temporary name has to be unique per writer, not just per path.
+  //
+  // With a fixed `${path}.tmp`, two processes writing the same file — two
+  // agents joining at once, which is ordinary here — both write to the same
+  // temporary and then both rename it. The first rename succeeds and takes the
+  // file with it; the second fails with ENOENT because the thing it was about
+  // to move no longer exists. The write-to-temp-then-rename dance is supposed
+  // to make the update atomic, and sharing the temp made it *less* safe than
+  // writing in place would have been.
+  //
+  // A pid and a counter are enough: two processes differ by pid, and two
+  // writes inside one process differ by counter.
+  const tmp = `${path}.${process.pid}.${nextTempId++}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n", { encoding: "utf8", mode });
+    renameWithRetry(tmp, path);
+  } catch (err) {
+    // A temporary left behind would be swept by `atrium gc`, but only for the
+    // object store — this one is in `.atrium/` and nothing else would ever
+    // remove it.
+    try {
+      rmSync(tmp, { force: true });
+    } catch {
+      // Already gone, or gone in a way that is not worth masking the real
+      // error to report.
+    }
+    throw err;
+  }
 }
+
+/** Distinguishes two writes from the same process; see `writeJson`. */
+let nextTempId = 0;

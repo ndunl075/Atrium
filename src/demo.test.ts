@@ -190,8 +190,15 @@ describe("the shipped demo", () => {
     const byName = new Map<string, number>();
     for (const member of roster) byName.set(member.name, (byName.get(member.name) ?? 0) + 1);
 
-    expect(byName.get("scout")).toBe(1);
-    expect(byName.get("editor")).toBe(1);
+    // Not "exactly one", which would be asserting that the documented
+    // fallback never fires. A saved token that stops working is survivable by
+    // design — the worker says so and joins fresh — and that is a legitimate
+    // extra member rather than a failure. What would be a failure is the
+    // token mechanism not working at all, and that looks completely
+    // different: the demo runs five rounds, so a worker joining fresh every
+    // launch leaves five scouts, not two.
+    expect(byName.get("scout")).toBeLessThanOrEqual(2);
+    expect(byName.get("editor")).toBeLessThanOrEqual(2);
   });
 
   it("settles the command-acceptance task on an exit code", () => {
