@@ -80,6 +80,62 @@ describe("EventLog", () => {
     }
   });
 
+  it("can read the newest events first without loading and reversing the whole log", () => {
+    const { log, cleanup } = tempLog();
+    try {
+      for (const text of ["one", "two", "three", "four", "five"]) {
+        log.append("m1", "note.posted", { memberId: "m1", text });
+      }
+
+      expect(log.read({ order: "desc", limit: 3 }).map((event) => event.seq)).toEqual([
+        5, 4, 3,
+      ]);
+      // Existing callers keep their oldest-first behavior.
+      expect(log.read({ limit: 3 }).map((event) => event.seq)).toEqual([1, 2, 3]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("applies range and type filters before taking newest-first results", () => {
+    const { log, cleanup } = tempLog();
+    try {
+      log.append("m1", "note.posted", { memberId: "m1", text: "one" });
+      log.append("m1", "task.created", {
+        taskId: "t1",
+        title: "task",
+        description: "",
+        dependsOn: [],
+        acceptance: { kind: "none" },
+      });
+      log.append("m1", "note.posted", { memberId: "m1", text: "three" });
+      log.append("m1", "note.posted", { memberId: "m1", text: "four" });
+
+      const events = log.read({
+        from: 2,
+        to: 4,
+        types: ["note.posted"],
+        order: "desc",
+        limit: 1,
+      });
+
+      expect(events.map((event) => event.seq)).toEqual([4]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("refuses an unknown order instead of silently choosing one", () => {
+    const { log, cleanup } = tempLog();
+    try {
+      expect(() => log.read({ order: "sideways" as never })).toThrow(
+        /either "asc" or "desc"/,
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
   it("refuses an unknown event type instead of quietly matching nothing", () => {
     const { log, cleanup } = tempLog();
     try {
