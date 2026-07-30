@@ -63,6 +63,7 @@ import {
   restartTask,
   reviewTask,
   runRoomOnce,
+  startPollingWorkers,
   parseRunnerConfig,
   readStream,
   followEvents,
@@ -3329,6 +3330,35 @@ export async function cmdRun(argv: string[], sink: Sink): Promise<number> {
       config = loadRunnerConfig(room, values.config);
     }
     if (maxConcurrent !== undefined) config = { ...config, maxConcurrent };
+
+    // Polling workers are started and left alone. Nothing is assigned to
+    // them, because the runner has not picked anything — they claim from the
+    // board themselves, which is why this path holds no plan at all.
+    const polling = config.workers.filter((worker) => worker.poll === true);
+    if (polling.length > 0) {
+      if (values["dry-run"]) {
+        sink.out(`Would start ${polling.length} polling worker(s):`);
+        for (const worker of polling) sink.out(`  ${worker.name}`);
+        sink.out(dim("Dry run only; nothing was launched."));
+        return 0;
+      }
+
+      const handle = startPollingWorkers(room, config, {
+        hooks: {
+          onStart: (worker) => sink.out(`Started ${worker.name}; it will claim its own work.`),
+        },
+      });
+      sink.out(dim("Ctrl-C to stop. The runner is not supervising these; it only started them."));
+
+      const codes = await handle.done;
+      const failed = codes.filter((code) => code !== 0).length;
+      sink.out(
+        failed === 0
+          ? `All ${codes.length} polling worker(s) exited cleanly.`
+          : `${failed} of ${codes.length} polling worker(s) exited with an error.`,
+      );
+      return failed === 0 ? 0 : 1;
+    }
 
     const dryRun = values["dry-run"] ?? false;
     const summary = await runRoomOnce(room, config, {

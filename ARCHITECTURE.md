@@ -27,7 +27,7 @@ This document was originally written before any code existed. Sections that have
 
 ## 0. Implementation status
 
-The honest state of the project as of 2026-07-30. 27.5k lines of TypeScript, 718 tests across 27 files, zero runtime dependencies.
+The honest state of the project as of 2026-07-30. 28.5k lines of TypeScript, 742 tests across 28 files, zero runtime dependencies.
 
 ### Built and tested
 
@@ -64,13 +64,13 @@ The honest state of the project as of 2026-07-30. 27.5k lines of TypeScript, 718
 | `manager` role | `src/types.ts`, `src/board.ts` | A reviewer that can free a stuck claim. Cannot un-freeze an escalation. §12.5 |
 | Named context blocks | `src/context.ts` | `##` sections of the brief, largest first, named in overflow messages. §12.10 |
 | Agent cards for the roster | `src/cards.ts` | A2A-shaped, opt-in, every card marked self-reported. §12.8 |
+| Long-lived polling workers | `src/runner.ts` | `"poll": true`. Told no assignment, so the runner holds no plan. §12.9 |
 
 ### Not built
 
 | Capability | Status | Section |
 |---|---|---|
 | `atrium plan` — proposed board from the brief | `[PLANNED]` — blocked on a design question | §12.2 |
-| Long-lived polling workers | `[OPEN]` | §12.9 |
 | Artifact-first tasks | `[OPEN]` — possible v1 shape | §13.6 |
 | Embeddings / semantic search | Deliberately deferred | §4 |
 | Multi-machine rooms | Deliberately deferred | §9 |
@@ -580,13 +580,19 @@ From A2A (§13.2). A member's capability manifest is self-reported free text plu
 
 `[OPEN]` The bigger version — exposing a whole room as an A2A endpoint, so an A2A client could work in an Atrium room the way an MCP client does — is a real interop bet and a large one. Not now, but it is the reason to get the small version's shape right.
 
-### 12.9 Long-lived workers in the runner `[OPEN]`
+### 12.9 Long-lived workers in the runner `[SHIPPED]`
 
-From Temporal's worker model (§13.5). `atrium run` launches one process per assignment and waits for it. Temporal instead has long-lived workers polling a task queue, which is cheaper per task and is what a real deployment looks like.
+From Temporal's worker model (§13.5). `atrium run` launched one process per assignment and waited for it; Temporal instead has long-lived workers polling a queue. For an agent this matters more than for a data pipeline, because process startup for an agent runtime is not milliseconds and a worker that stays up holds a warm connection.
 
-For an agent this matters more than it does for a data pipeline: process startup for an agent runtime is not milliseconds, and a worker that stays up can hold a warm connection to the room.
+A worker slot sets `"poll": true` in `runner.json`. `atrium run` starts those once and leaves them.
 
-`[OPEN]` It also breaks the thing that currently makes the runner obviously *not* an orchestrator: a per-task process cannot hold private state between tasks, so it cannot become a second source of truth by accident. A long-lived worker can. If this is built, the rule in §7.4 needs teeth beyond good intentions.
+**The objection this section raised turned out to point the wrong way, which is why it is worth recording rather than quietly dropping.** The worry was that a long-lived worker can hold private state between tasks and so become a second source of truth, where a per-task process cannot. But look at what the per-task path already does: `planRunnerAssignments` decides *which worker gets which task*. That is a scheduling decision, held by the runner, and it is the closest this design has ever come to a private plan.
+
+A polling worker deletes it. Nothing is assigned, because the runner has not picked anything; the worker claims from the board itself and the atomic claim in §6 settles the race between workers. So **long-lived workers make the runner less of an orchestrator, not more**.
+
+`[CONFIRMED]` That is also where §7.4's rule finally gets teeth rather than good intentions: a polling worker is handed `ATRIUM_ROOM`, its own name, and nothing else. There is no assignment for it to remember, so there is nothing it can hold that the room does not already know. What a worker does inside its own process stays its own business — Atrium cannot police that and should not pretend to — but that is equally true of any long-running MCP client, and it is not something the runner handed it.
+
+`[CONFIRMED]` The runner does not supervise or restart polling workers. Restarting one that exited would be the runner deciding the job is not finished yet, which is a conclusion about the board — and the board is not the runner's to draw conclusions from. A worker that stops has stopped; whether that matters is for a person, or a supervisor above the runner, to decide.
 
 ### 12.10 Named context blocks `[SHIPPED]`
 
