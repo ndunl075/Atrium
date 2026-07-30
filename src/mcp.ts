@@ -20,6 +20,7 @@
 
 import { createInterface } from "node:readline";
 
+import { agentCards } from "./cards.js";
 import {
   acquireLease,
   currentLease,
@@ -422,7 +423,12 @@ export class RoomServer {
       // about each other by an orchestrator that does not exist here. This is
       // the read half of that — the write half is already `join` itself.
       case "list_members":
-        return this.room.roster();
+        // Cards are opt-in rather than the default shape: the plain roster is
+        // what every existing caller already parses, and §12.8's caution says
+        // a tidier shape should be asked for rather than arriving unannounced.
+        return Boolean(args["cards"])
+          ? agentCards(this.room.roster())
+          : this.room.roster();
 
       // Everything below is what lets an agent see what changed rather than
       // just what a path says now — the tool-layer half of ARCHITECTURE.md
@@ -1036,8 +1042,17 @@ const TOOLS: ToolDefinition[] = [
   {
     name: "list_members",
     description:
-      "Everyone who has ever joined this room, including members who have since left (marked inactive rather than removed). For each one: role, tags, and the manifest it gave on join describing what it's good for. This is entirely self-reported — ARCHITECTURE.md §3.2 deliberately has no capability schema behind it, so nothing here is verified. Treat it as a lead on who to ask or hand work to, not a guarantee of what anyone can actually do.",
-    inputSchema: { type: "object", properties: {} },
+      "Everyone who has ever joined this room, including members who have since left (marked inactive rather than removed). For each one: role, tags, and the manifest it gave on join describing what it's good for. This is entirely self-reported — ARCHITECTURE.md §3.2 deliberately has no capability schema behind it, so nothing here is verified. Treat it as a lead on who to ask or hand work to, not a guarantee of what anyone can actually do. Pass cards:true for the same information as A2A-style agent cards, which is easier to parse and no more true: every card says so on its face.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cards: {
+          type: "boolean",
+          description:
+            "Return A2A-shaped capability cards instead of raw roster entries. Still self-reported; each card carries selfReported:true and says where the claim came from.",
+        },
+      },
+    },
   },
   {
     name: "list_versions",

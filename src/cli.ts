@@ -26,6 +26,7 @@ import {
   InvalidError,
   Room,
   applyConfigChange,
+  agentCards,
   applyJob,
   briefAt,
   briefDrift,
@@ -3024,6 +3025,7 @@ says about itself, not a verified claim about what it can actually do.
 
 Options:
   --active     only members who have not left
+  --cards      A2A-shaped capability cards instead (implies --json)
   --json       print machine-readable JSON instead
   --help, -h   show this help
 `;
@@ -3058,6 +3060,7 @@ export function cmdRoster(argv: string[], sink: Sink): number {
       help: { type: "boolean", short: "h" },
       json: { type: "boolean" },
       active: { type: "boolean" },
+      cards: { type: "boolean" },
     },
     allowPositionals: true,
   });
@@ -3070,6 +3073,13 @@ export function cmdRoster(argv: string[], sink: Sink): number {
   const room = openRoom(dir);
   try {
     const roster = room.roster().filter((m) => !values.active || m.active);
+
+    // Cards are a machine shape; there is no readable rendering of one that
+    // would say anything the plain roster below does not already say better.
+    if (values.cards) {
+      sink.out(JSON.stringify(agentCards(roster), null, 2));
+      return 0;
+    }
 
     if (values.json) {
       sink.out(JSON.stringify(roster, null, 2));

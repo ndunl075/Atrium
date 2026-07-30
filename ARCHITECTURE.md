@@ -63,13 +63,13 @@ The honest state of the project as of 2026-07-30. 27.5k lines of TypeScript, 718
 | Event stream | `src/stream.ts` | `atrium tail`, and SSE at `GET /events`. Payload plus rendered line. §12.4 |
 | `manager` role | `src/types.ts`, `src/board.ts` | A reviewer that can free a stuck claim. Cannot un-freeze an escalation. §12.5 |
 | Named context blocks | `src/context.ts` | `##` sections of the brief, largest first, named in overflow messages. §12.10 |
+| Agent cards for the roster | `src/cards.ts` | A2A-shaped, opt-in, every card marked self-reported. §12.8 |
 
 ### Not built
 
 | Capability | Status | Section |
 |---|---|---|
 | `atrium plan` — proposed board from the brief | `[PLANNED]` — blocked on a design question | §12.2 |
-| Agent cards for the roster | `[OPEN]` | §12.8 |
 | Long-lived polling workers | `[OPEN]` | §12.9 |
 | Artifact-first tasks | `[OPEN]` — possible v1 shape | §13.6 |
 | Embeddings / semantic search | Deliberately deferred | §4 |
@@ -566,13 +566,17 @@ That is fixed. §4.1 has the design; the short version is that `context.written`
 
 Worth keeping the sequence on the record: the gap had been in the document since the first draft and no amount of re-reading it would have surfaced the problem. Building the feature that depended on the claim is what showed the claim was false.
 
-### 12.8 Agent cards for the roster `[OPEN]`
+### 12.8 Agent cards for the roster `[SHIPPED]`
 
-From A2A (§13.2). A member's capability manifest is self-reported free text plus tags (§3.2), which `list_members` hands to other agents as a lead, not a fact. A2A has standardised the shape of exactly this — a card describing what an agent can do — and 150-plus organisations have agreed to it.
+From A2A (§13.2). A member's capability manifest is self-reported free text plus tags (§3.2), handed to other agents as a lead rather than a fact. A2A has standardised the shape of exactly this, and emitting the same shape costs little and buys interoperability.
 
-Adopting that shape for the manifest costs little and buys interoperability: tooling that already reads agent cards could read an Atrium roster.
+`src/cards.ts`, opt-in through `list_members` with `cards: true` and `atrium roster --cards`. Opt-in rather than the default because the plain roster is what every existing caller already parses, and a tidier shape should be asked for rather than arriving unannounced.
 
-`[CONFIRMED]` If this happens, the manifest stays self-reported and everything that surfaces it keeps saying so. A standard shape makes a claim easier to parse; it does not make it true, and a card that looks official is more likely to be trusted than free text that obviously is not. That is a reason for caution, not enthusiasm.
+`[CONFIRMED]` The caution in this section turned out to be the entire design. Free text that obviously came from the agent is read sceptically; a tidy card with named skill objects looks like something that was checked, and nothing checked it. So every card carries `selfReported: true` **and** a `provenance` sentence saying where the claim came from — on every card, not only doubtful ones, because a field that appears sometimes reads as a warning about *those* cards. The `role` is the one verified thing on a card, because Atrium enforces what a role may do, and it sits under `atrium` where it cannot be mistaken for part of the standard.
+
+`[CONFIRMED]` No `url` field. A2A cards carry an address to call; an Atrium member participates in a room and there is nothing to call. The field is absent rather than faked, which is also the clearest statement of what these cards are: descriptive, not addressable.
+
+`[OPEN]` The bigger version — exposing a whole room as an A2A endpoint, so an A2A client could work in an Atrium room the way an MCP client does — is a real interop bet and a large one. Not now, but it is the reason to get the small version's shape right, and the shape above is deliberately compatible with it: the same fields would carry over, gaining a `url` that would at last mean something.
 
 `[OPEN]` The bigger version — exposing a whole room as an A2A endpoint, so an A2A client could work in an Atrium room the way an MCP client does — is a real interop bet and a large one. Not now, but it is the reason to get the small version's shape right.
 

@@ -198,6 +198,12 @@ export {
   type FollowOptions,
   type FollowHandle,
 } from "./stream.js";
+export {
+  agentCard,
+  agentCards,
+  type AgentCard,
+  type CardSkill,
+} from "./cards.js";
 export { parseYaml, type YamlValue, type YamlParseOptions } from "./yaml.js";
 export {
   parseJob,
