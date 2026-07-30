@@ -114,6 +114,10 @@ describe("serveWatch", () => {
     expect(body).toContain("scout");
     expect(body).toContain("reads sources and takes notes");
     expect(body).toContain("research");
+    expect(body).toContain('class="notebook-rail"');
+    expect(body).toContain('href="#board-section"');
+    expect(body).toContain('class="workspace"');
+    expect(body).toContain("room notebook");
   });
 
   it("escapes member and task text that could otherwise inject markup", async () => {

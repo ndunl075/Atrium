@@ -287,6 +287,478 @@ select:focus-visible, button:focus-visible, a:focus-visible { outline: 2px solid
   .wrap { padding: 26px 16px 60px; }
   #log li { flex-wrap: wrap; gap: 6px; }
 }
+
+/* OpenNote-inspired notebook shell. The original rules above remain the
+   component baseline for room, task, and diff pages; these overrides add the
+   stronger art direction without changing live-update ids or semantics. */
+:root {
+  --paper: #f2efe6;
+  --surface: #fffdf7;
+  --ink: #1d1d18;
+  --ink-soft: #55534b;
+  --ink-faint: #8a867b;
+  --line: #d8d2c3;
+  --line-soft: #ebe6da;
+  --accent: #8a5b00;
+  --accent-fill: #f8eaa5;
+  --sun: #f3d34f;
+  --sun-soft: #fbefb2;
+  --mint: #ddefd9;
+  --shadow: 5px 5px 0 #1d1d18;
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, ui-serif, serif;
+  --sans: "Avenir Next", Avenir, "Century Gothic", "Trebuchet MS", sans-serif;
+  --mono: "Cascadia Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+}
+
+html { scroll-behavior: smooth; }
+
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 1px 1px, rgba(29, 29, 24, 0.075) 1px, transparent 1.2px)
+      0 0 / 22px 22px,
+    var(--paper);
+  font-size: 14px;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0 0 auto;
+  height: 7px;
+  z-index: 20;
+  background: var(--sun);
+  border-bottom: 1px solid var(--ink);
+}
+
+a {
+  color: inherit;
+  border-bottom-color: currentColor;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+a:hover { color: #654300; }
+
+.wrap { max-width: 1320px; padding: 36px 32px 96px; }
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 228px minmax(0, 1fr);
+  gap: 30px;
+  align-items: start;
+}
+
+.notebook-rail {
+  position: sticky;
+  top: 30px;
+  min-height: calc(100vh - 66px);
+  display: flex;
+  flex-direction: column;
+  padding: 22px 18px 18px;
+  color: var(--ink);
+  background: var(--sun);
+  border: 1.5px solid var(--ink);
+  border-radius: 22px;
+  box-shadow: var(--shadow);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid rgba(29, 29, 24, 0.35);
+}
+
+.brand-mark {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  background: var(--ink);
+  color: var(--sun);
+  border-radius: 12px 12px 4px 12px;
+  font-family: var(--serif);
+  font-size: 23px;
+  font-weight: 800;
+  transform: rotate(-3deg);
+}
+
+.brand-name {
+  font-family: var(--serif);
+  font-size: 21px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.03em;
+}
+
+.brand-caption {
+  margin-top: 4px;
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  opacity: 0.65;
+}
+
+.room-nav { display: grid; gap: 5px; margin-top: 25px; }
+
+.room-nav a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 11px;
+  border: 0;
+  border-radius: 11px;
+  font-weight: 700;
+  transition: transform 140ms ease, background 140ms ease;
+}
+
+.room-nav a::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border: 1px solid var(--ink);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.room-nav a:hover {
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.52);
+  transform: translateX(3px);
+}
+
+.rail-note {
+  margin-top: auto;
+  padding: 13px;
+  background: rgba(255, 255, 255, 0.46);
+  border: 1px solid rgba(29, 29, 24, 0.4);
+  border-radius: 13px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.rail-note strong {
+  display: block;
+  margin-bottom: 3px;
+  font-family: var(--mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.workspace { min-width: 0; }
+
+header.masthead {
+  position: relative;
+  overflow: hidden;
+  margin-bottom: 24px;
+  padding: 30px 32px 27px;
+  background: var(--surface);
+  border: 1.5px solid var(--ink);
+  border-radius: 24px 24px 8px 24px;
+  box-shadow: var(--shadow);
+}
+
+header.masthead::after {
+  content: "";
+  position: absolute;
+  width: 112px;
+  height: 112px;
+  top: -58px;
+  right: -28px;
+  background: var(--sun);
+  border: 1.5px solid var(--ink);
+  border-radius: 50%;
+}
+
+.masthead h1 {
+  position: relative;
+  z-index: 1;
+  max-width: 760px;
+  margin-bottom: 13px;
+  font-size: clamp(36px, 5.5vw, 66px);
+  font-weight: 800;
+  line-height: 0.95;
+  letter-spacing: -0.055em;
+}
+
+.masthead .meta {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  font-family: var(--sans);
+  font-size: 11px;
+}
+
+.masthead .meta span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 4px 9px;
+  color: var(--ink-soft);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.masthead .meta span + span::before { content: none; margin: 0; }
+
+.masthead .meta .live {
+  color: #184c2e;
+  background: var(--mint);
+  border-color: #84ad83;
+  font-weight: 800;
+}
+
+.masthead .meta .live::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: #2d7b49;
+  box-shadow: 0 0 0 3px rgba(45, 123, 73, 0.14);
+}
+
+.workspace section {
+  scroll-margin-top: 24px;
+  margin-bottom: 20px;
+  padding: 23px;
+  background: rgba(255, 253, 247, 0.92);
+  border: 1.5px solid var(--ink);
+  border-radius: 21px 21px 8px 21px;
+  box-shadow: 3px 3px 0 var(--ink);
+}
+
+.wrap > section {
+  margin-bottom: 20px;
+  padding: 23px;
+  background: rgba(255, 253, 247, 0.92);
+  border: 1.5px solid var(--ink);
+  border-radius: 21px 21px 8px 21px;
+  box-shadow: 3px 3px 0 var(--ink);
+}
+
+section > h2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+  padding: 0;
+  border: 0;
+  color: var(--ink);
+  font-family: var(--serif);
+  font-size: 22px;
+  font-weight: 800;
+  text-transform: none;
+  letter-spacing: -0.025em;
+}
+
+section > h2::after {
+  content: "";
+  height: 1px;
+  flex: 1;
+  margin-left: 4px;
+  background: var(--line);
+}
+
+.card {
+  overflow: hidden;
+  background: var(--surface);
+  border-color: var(--line);
+  border-radius: 14px;
+}
+
+#brief pre.brief {
+  padding: 18px;
+  background: #fff8d7;
+  border: 1px solid #dacb7c;
+  border-radius: 13px;
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+#board {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+#board > .empty { grid-column: 1 / -1; }
+
+.stategroup {
+  min-width: 0;
+  margin: 0;
+  padding: 13px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 15px;
+}
+
+.stategroup > h3 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 10px;
+}
+
+.pill {
+  padding: 4px 9px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.task {
+  padding: 13px 14px;
+  border-color: #cfc8b7;
+  border-radius: 12px;
+  box-shadow: 0 2px 0 rgba(29, 29, 24, 0.08);
+  transition: transform 140ms ease, box-shadow 140ms ease;
+}
+
+.task:hover {
+  transform: translateY(-2px) rotate(-0.15deg);
+  box-shadow: 0 5px 0 rgba(29, 29, 24, 0.09);
+}
+
+.task .title {
+  font-family: var(--serif);
+  font-size: 16px;
+}
+
+.task .title a { border: 0; }
+.task .id { margin-top: 3px; }
+
+.board-tools {
+  padding: 10px;
+  background: var(--sun-soft);
+  border: 1px solid #d6c15d;
+  border-radius: 13px;
+}
+
+.board-tools input {
+  min-height: 38px;
+  background: var(--surface);
+  border-color: #b7aa75;
+  border-radius: 9px;
+}
+
+table { min-width: 620px; }
+
+th {
+  padding-top: 11px;
+  color: var(--ink-soft);
+  background: #f6f2e8;
+}
+
+th, td { padding: 10px 12px; }
+
+#log {
+  overflow: hidden;
+  background: #24241f;
+  border: 1.5px solid #0f0f0d;
+  border-radius: 15px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.055);
+}
+
+#log li {
+  gap: 14px;
+  padding: 9px 13px;
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+
+#log .seq { color: #ddbf45; }
+#log .ts { color: #85847a; }
+#log .line { color: #f4f0e6; }
+
+.note {
+  border-color: var(--ink);
+  border-left-width: 1px;
+  border-radius: 14px 14px 5px 14px;
+  background: var(--sun-soft);
+  box-shadow: 3px 3px 0 var(--ink);
+}
+
+.crumb a {
+  display: inline-flex;
+  padding: 7px 11px;
+  background: var(--surface);
+  border: 1px solid var(--ink);
+  border-radius: 999px;
+}
+
+select, button { border-color: var(--ink); border-radius: 9px; }
+
+button {
+  background: var(--sun);
+  font-weight: 800;
+  box-shadow: 2px 2px 0 var(--ink);
+}
+
+button:hover {
+  color: var(--ink);
+  background: var(--sun-soft);
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 var(--ink);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .notebook-rail { animation: settle-in 420ms cubic-bezier(.2,.8,.2,1) both; }
+  .workspace { animation: rise-in 500ms 70ms cubic-bezier(.2,.8,.2,1) both; }
+}
+
+@keyframes settle-in {
+  from { opacity: 0; transform: translateX(-12px) rotate(-0.7deg); }
+  to { opacity: 1; transform: translateX(0) rotate(0); }
+}
+
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 900px) {
+  .wrap { padding: 26px 18px 70px; }
+  .app-shell { grid-template-columns: 1fr; }
+  .notebook-rail {
+    position: static;
+    min-height: 0;
+    padding: 14px;
+    border-radius: 18px;
+  }
+  .brand { padding-bottom: 13px; }
+  .room-nav {
+    display: flex;
+    gap: 4px;
+    margin-top: 12px;
+    overflow-x: auto;
+  }
+  .room-nav a { flex: 0 0 auto; padding: 8px 10px; }
+  .room-nav a::before, .rail-note { display: none; }
+}
+
+@media (max-width: 640px) {
+  .wrap { padding: 23px 11px 50px; }
+  header.masthead { padding: 25px 21px 22px; }
+  .masthead h1 { font-size: 39px; }
+  .workspace section { padding: 17px 14px; }
+  #board { grid-template-columns: 1fr; }
+  .board-tools { align-items: stretch; flex-direction: column; }
+  .board-tools input { min-width: 0; width: 100%; }
+  .card { overflow-x: auto; }
+  #log li { display: grid; grid-template-columns: 42px 1fr; }
+  #log .line { grid-column: 1 / -1; padding-left: 0; }
+}
 `;
 
 // ---------------------------------------------------------------------------
@@ -622,6 +1094,25 @@ function renderRoomPage(room: Room): string {
     .reverse();
 
   const body = `
+<div class="app-shell">
+<aside class="notebook-rail" aria-label="Room sections">
+  <div class="brand">
+    <div class="brand-mark" aria-hidden="true">A</div>
+    <div>
+      <div class="brand-name">Atrium</div>
+      <div class="brand-caption">room notebook</div>
+    </div>
+  </div>
+  <nav class="room-nav">
+    <a href="#brief-section">Brief</a>
+    <a href="#board-section">Board</a>
+    <a href="#members-section">Members</a>
+    <a href="#artifacts-section">Artifacts</a>
+    <a href="#log-section">Activity</a>
+  </nav>
+  <div class="rail-note"><strong>Read-only view</strong>This notebook mirrors the room as it changes. Use the CLI or MCP tools to act.</div>
+</aside>
+<main class="workspace" id="main-content">
 <header class="masthead">
   <h1>${escapeHtml(config.name)}</h1>
   <div class="meta">
@@ -634,8 +1125,8 @@ function renderRoomPage(room: Room): string {
   </div>
 </header>
 <div id="halted">${room.isHalted() ? HALTED_NOTE : ""}</div>
-<section><h2>Brief ${renderContextBudget(context)}</h2><div id="brief">${renderBrief(room, context)}</div></section>
-<section><h2>Board</h2>
+<section id="brief-section"><h2>Brief ${renderContextBudget(context)}</h2><div id="brief">${renderBrief(room, context)}</div></section>
+<section id="board-section"><h2>Board</h2>
   <div class="board-tools">
     <label for="task-filter">Filter tasks</label>
     <input id="task-filter" type="search" placeholder="title, id, state, member..." autocomplete="off">
@@ -643,9 +1134,11 @@ function renderRoomPage(room: Room): string {
   </div>
   <div id="board">${renderBoard(tasks, names)}</div>
 </section>
-<section><h2>Members</h2><div id="roster">${renderRoster(room)}</div></section>
-<section><h2>Artifacts</h2><div id="artifacts">${renderArtifacts(room)}</div></section>
-<section><h2>Event log</h2><ul id="log">${lines.map(renderLogLine).join("")}</ul></section>
+<section id="members-section"><h2>Members</h2><div id="roster">${renderRoster(room)}</div></section>
+<section id="artifacts-section"><h2>Artifacts</h2><div id="artifacts">${renderArtifacts(room)}</div></section>
+<section id="log-section"><h2>Activity</h2><ul id="log">${lines.map(renderLogLine).join("")}</ul></section>
+</main>
+</div>
 `;
 
   return page(`${config.name} — atrium watch`, body, clientScript(head));
