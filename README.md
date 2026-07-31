@@ -529,9 +529,9 @@ costs cannot be included in Atrium's totals.
 Distributed rooms, semantic retrieval, and enforced model-level cost metering
 are not currently implemented.
 
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for design details and open
-decisions — section 0 lists what is built versus planned, and section 12
-covers what is being built next.
+See [ARCHITECTURE.md](https://github.com/ndunl075/Atrium/blob/main/ARCHITECTURE.md)
+for design details and open decisions — section 0 lists what is built versus
+planned, and section 12 covers what is being built next.
 
 ## License
 

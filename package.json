@@ -42,7 +42,6 @@
     "dist/**/*.js",
     "dist/**/*.d.ts",
     "README.md",
-    "ARCHITECTURE.md",
     "LICENSE"
   ],
   "scripts": {

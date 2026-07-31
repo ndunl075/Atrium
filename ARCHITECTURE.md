@@ -2,7 +2,7 @@
 
 **An open source office for AI agents to get context, coordinate, and finish real work.**
 
-Status: v0.2 shipped; building toward v0.3
+Status: v0.3 tagged and packaged; not yet on npm
 Last updated: 2026-07-30
 
 ---
@@ -27,7 +27,7 @@ This document was originally written before any code existed. Sections that have
 
 ## 0. Implementation status
 
-The honest state of the project as of 2026-07-30. 29.5k lines of TypeScript, 760 tests across 29 files, zero runtime dependencies.
+The honest state of the project as of 2026-07-30. 29.1k lines of TypeScript (16.8k of it outside the tests), 764 tests across 30 files, zero runtime dependencies.
 
 ### Built and tested
 
@@ -79,7 +79,7 @@ The honest state of the project as of 2026-07-30. 29.5k lines of TypeScript, 760
 
 ### Known gaps that are not features
 
-- **Not published to npm yet, though the package is ready.** `package.json` is configured, trimmed (576 kB → 221 kB by dropping source maps that pointed at unshipped `src/`, and a README-only image), and verified by installing the tarball into a clean project and running the CLI and the library out of it. What remains is one interactive step nobody else can take: `npm login`, then `npm publish`.
+- **Not published to npm yet, though the package is ready.** `package.json` is configured, trimmed (576 kB → 211 kB by dropping source maps that pointed at unshipped `src/`, a README-only image, and this document), and verified by installing the tarball into a clean project and running the CLI and the library out of it. What remains is one interactive step nobody else can take: `npm login`, then `npm publish`.
 
   The name is `@ndunl075/atrium`, scoped because `atrium` on npm is an unrelated `0.0.0` placeholder. The installed command is still `atrium`.
 - ~~No runnable demo.~~ Fixed by §12.1 and §12.1a: `npm run demo`.
@@ -171,9 +171,11 @@ open → claimed → submitted → accepted
                   rejected → open
        ↓
     blocked → open
+
+claimed ⇄ needs_input    claim held, lease frozen while waiting (§12.6)
 ```
 
-Tasks carry: title, description, `depends_on[]`, `acceptance` (see §5), claim lease, attempt count.
+Tasks carry: title, description, `depends_on[]`, `acceptance` (see §5), claim lease, attempt count, and optionally `expectedOutput` (§12.3) and `produces` (§13.6).
 
 ### 3.5 The Event Log
 
@@ -216,14 +218,6 @@ Three things follow from that, and each is a deliberate choice:
 `[CONFIRMED]` Drift between the file and the log is normal, not damage: somebody edited the brief and nobody has joined since. `atrium verify` reports it as `info`, and only once the room has members — a room nobody has joined has not handed its brief to anyone, so there is no decision the log is failing to explain. `atrium context --record` captures immediately for anyone who does not want to wait.
 
 `[OPEN]` A brief edited and then edited back before anybody joins leaves no trace of the intermediate version. Capture-on-join sees content, not keystrokes. This is the accepted cost of the brief staying an ordinary file, and the alternative — watching the filesystem — buys very little for a great deal of machinery.
-
-### Boundary with Trayce `[OPEN]`
-
-This needs a public answer before the repo goes live, because it will be the first question a technical reader asks.
-
-Working answer: **Trayce is user-scoped context — what *you* know, your files, your voice, your history. Atrium is job-scoped context — what *this room* knows about *this piece of work*.** A user might attach Trayce to a Room as a Tier 2 context source through MCP, which makes them complementary rather than competing.
-
-Decide whether that is genuinely true or whether it is a story told to justify building both. If Atrium's context layer starts growing a personal knowledge graph, the projects have collided and one should absorb the other.
 
 ---
 
@@ -282,11 +276,24 @@ What remains genuinely unsolved, `[OPEN]`: a member that never calls `report_cos
 
 Atrium exposes a Room as an MCP server. Any MCP-capable agent joins with zero Atrium-specific code. This is the adoption path — the install story is a config entry, not an SDK.
 
-Tools exposed: `join`, `get_context`, `search_artifacts`, `list_tasks`, `claim_task`, `read_artifact`, `write_artifact`, `submit_task`, `review_task`, `post_note`, `read_log`.
+The 26 tools exposed, grouped by what they touch:
+
+| Group | Tools |
+|---|---|
+| Joining and the roster | `join`, `list_members` |
+| Context | `get_context`, `pin_artifact`, `unpin_artifact` |
+| The board | `list_tasks`, `get_task`, `create_task`, `claim_task`, `renew_claim`, `submit_task`, `review_task` |
+| Waiting on a person (§12.6) | `ask_for_input`, `provide_input`, `withdraw_question` |
+| Artifacts and leases | `read_artifact`, `write_artifact`, `list_artifacts`, `search_artifacts`, `list_versions`, `diff_artifact`, `list_leases`, `release_artifact` |
+| The log and spend | `read_log`, `post_note`, `report_cost` |
 
 ### 7.2 CLI
 
-`atrium init`, `atrium open <room>`, `atrium board`, `atrium log`, `atrium invite`, `atrium replay <seq>`.
+Room lifecycle: `init` (optionally `--from job.yaml`), `open`, `invite`, `config`, `verify`, `fork`.
+
+State and history: `board`, `task`, `roster`, `artifacts`, `search`, `context`, `cost`, `leases`, `log`, `replay`, `tail`, `history`, `diff`, `lineage`, `gc`, `prune`.
+
+Processes: `serve` (MCP over stdio), `watch` (§7.3), `run` (§7.4).
 
 ### 7.3 Watch UI `[SHIPPED]`
 
@@ -369,8 +376,6 @@ Explicitly still cut: embeddings, remote or multi-machine Rooms, auth beyond a l
 
 What that leaves is the honest limit of it: the workers are scripted, so this demonstrates that the *coordination* works and says nothing about whether real agents coordinate well. That question needs §12.1a's `--model` mode, or somebody pointing a real agent at a room and reporting back. The second would be worth more.
 
-`[OPEN]` **Time budget.** This was scoped as a side project. Set a real cap in wall-clock hours and write it here. A number you have to look at is harder to blow through than a number you carry around in your head.
-
 ---
 
 ## 10. Open questions
@@ -378,11 +383,10 @@ What that leaves is the honest limit of it: the workers are scripted, so this de
 Still open:
 
 1. Room metaphor or dispatcher metaphor. Everything above assumes room. §1
-2. Trayce boundary — real distinction or convenient story. §4
-3. Context overflow policy. §6
-4. Cost enforcement without controlling model calls. §6 — likely unsolvable from outside the model call; advisory may be the permanent answer.
-5. Whether this stays a side project or becomes a thing. Answer it deliberately rather than by drift.
-6. Whether shipping reference workers (§12.1) makes Atrium an agent framework by the back door. The line held so far is that a worker in `examples/` is a *demonstration* of the MCP interface, not part of the product surface, and nothing in `src/` may import one.
+2. Context overflow policy. §6
+3. Cost enforcement without controlling model calls. §6 — likely unsolvable from outside the model call; advisory may be the permanent answer.
+4. Whether this stays a side project or becomes a thing. Answer it deliberately rather than by drift.
+5. Whether shipping reference workers (§12.1) makes Atrium an agent framework by the back door. The line held so far is that a worker in `examples/` is a *demonstration* of the MCP interface, not part of the product surface, and nothing in `src/` may import one.
 
 Resolved since first draft:
 
@@ -407,7 +411,7 @@ That scheduler now has a shape, borrowed from AutoGen (§13.4): a pluggable **cl
 
 The build queue. Provenance for the borrowed ideas — which system each came from, and what was refused along with it — is in §13.
 
-Ordering is by what unblocks the v0.3 definition of done in §9, not by what is most interesting. §12.1 shipped; §12.1a is the other half of it and is next. Items marked `[PLANNED]` are decided and scheduled; items marked `[OPEN]` are here because they are worth wanting and are not yet decided — several carry a real objection in their own text, and none of them should be built before that objection has an answer.
+Ordering was by what unblocks the v0.3 definition of done in §9, not by what is most interesting. Everything here has now shipped except §12.2, which is the one remaining `[PLANNED]` item and is blocked on the design question in its own text. Items marked `[PLANNED]` are decided and scheduled; items marked `[OPEN]` are here because they are worth wanting and are not yet decided — several carry a real objection in their own text, and none of them should be built before that objection has an answer.
 
 ### 12.1 YAML job declaration `[SHIPPED]`
 
@@ -451,7 +455,7 @@ Still outstanding for the v0.3 definition of done: this seeds a board, but a str
 
 `npm run demo` builds the project, seeds a room from `examples/demo/job.yaml`, and runs the newsroom job to completion — including a rejection that sends the draft back and a rework that fixes it. Nothing to configure, no key, no network.
 
-Three processes under `examples/demo/`, all of them ordinary MCP clients:
+Five files under `examples/demo/` (alongside `job.yaml`), all of them ordinary MCP clients:
 
 | File | What it is |
 |---|---|
@@ -461,11 +465,11 @@ Three processes under `examples/demo/`, all of them ordinary MCP clients:
 | `check-draft.mjs` | A `command` acceptance. Copied into the room, since acceptance commands run with the room as cwd. |
 | `run.mjs` | The driver. Alternates dispatch passes and review passes, and narrates. |
 
-`[CONFIRMED]` They live in `examples/`, not `src/`, and nothing in `src/` imports them. The line that keeps Atrium from becoming an agent framework by the back door (§10, open question 6) is that a reference worker is a *demonstration of the MCP interface*, the same as any third-party agent, with no privileged access. Writing them found no case where that was inconvenient, which is the useful result.
+`[CONFIRMED]` They live in `examples/`, not `src/`, and nothing in `src/` imports them. The line that keeps Atrium from becoming an agent framework by the back door (§10, open question 5) is that a reference worker is a *demonstration of the MCP interface*, the same as any third-party agent, with no privileged access. Writing them found no case where that was inconvenient, which is the useful result.
 
 `[CONFIRMED]` The workers are scripted, and the decision to keep them so was deliberate. They do not call a model: the prose is in the file, and the first draft carries a figure no source supports. What is *not* staged is the verdict — the reviewer applies a rule to the text (every number in the draft must appear in the sources) and the first draft fails it. Nobody told the reviewer to reject that draft.
 
-The argument for scripted over real is that this doubles as a regression test (`src/demo.test.ts`, 9 assertions). A demo nobody checks rots quietly, and the dangerous failure is not a crash — anyone notices a crash — but the rejection silently ceasing to happen while `npm run demo` still exits 0. The test asserts the *story*: work was handed in, turned down for a reason drawn from the text, came back changed, and was accepted by a different member. A model-backed worker would demonstrate more and could be relied on for less.
+The argument for scripted over real is that this doubles as a regression test (`src/demo.test.ts`, 8 tests). A demo nobody checks rots quietly, and the dangerous failure is not a crash — anyone notices a crash — but the rejection silently ceasing to happen while `npm run demo` still exits 0. The test asserts the *story*: work was handed in, turned down for a reason drawn from the text, came back changed, and was accepted by a different member. A model-backed worker would demonstrate more and could be relied on for less.
 
 `[OPEN]` Whether to add a `--model` mode later. It would make the demo honest about agent behaviour rather than only about the plumbing, at the cost of a key, a per-run charge, and a second code path. Not needed for the v0.3 goal, which is why it did not ship with this.
 
@@ -481,11 +485,11 @@ CrewAI's `planning=True` has a model decompose the goal into a task sequence bef
 
 `[OPEN]` Atrium does not make model calls (§8), so `plan` cannot generate the proposal itself. Either it shells out to an operator-configured command the way the runner does, or it emits a prompt for an agent already in the room to answer through MCP. The second keeps the no-model-calls property intact and is preferred, but it is slower to demo. Decide before building.
 
-### 12.3 `expectedOutput` on tasks `[PLANNED]`
+### 12.3 `expectedOutput` on tasks `[SHIPPED]`
 
-CrewAI tasks declare an `expected_output` and validate against it with guardrails. Atrium's `acceptance` (§5) is the stronger mechanism — it is adversarial where a guardrail is self-checking — but it is currently thin on *what* is being checked: a reviewer gets a title and a description and has to infer the bar.
+CrewAI tasks declare an `expected_output` and validate against it with guardrails. Atrium's `acceptance` (§5) is the stronger mechanism — it is adversarial where a guardrail is self-checking — but it was thin on *what* was being checked: a reviewer got a title and a description and had to infer the bar.
 
-Add an optional `expectedOutput` to `Task`: prose stating what a finished version looks like, optionally with a JSON schema for structured work. It is carried into the reviewer's prompt through MCP and available to a `command` acceptance as an environment variable.
+`Task.expectedOutput` is optional prose stating what a finished version looks like, with an optional JSON schema for structured work. It is carried through MCP (`create_task`, and back out of `get_task`), the CLI (`atrium task add`, shown by `atrium task show`), and job files (§12.1), and a `command` acceptance receives it as `ATRIUM_EXPECTED_OUTPUT`, with `ATRIUM_EXPECTED_OUTPUT_SCHEMA` when the contract includes a schema. `src/types.ts`, `src/board.ts`, `src/acceptance.ts`.
 
 `[CONFIRMED]` This is a contract, not a gate. It does not accept anything on its own; it tells whoever *is* accepting what they are accepting against. Adding a self-validating guardrail path would reintroduce self-declared completion.
 
@@ -578,8 +582,6 @@ From A2A (§13.2). A member's capability manifest is self-reported free text plu
 `[CONFIRMED]` No `url` field. A2A cards carry an address to call; an Atrium member participates in a room and there is nothing to call. The field is absent rather than faked, which is also the clearest statement of what these cards are: descriptive, not addressable.
 
 `[OPEN]` The bigger version — exposing a whole room as an A2A endpoint, so an A2A client could work in an Atrium room the way an MCP client does — is a real interop bet and a large one. Not now, but it is the reason to get the small version's shape right, and the shape above is deliberately compatible with it: the same fields would carry over, gaining a `url` that would at last mean something.
-
-`[OPEN]` The bigger version — exposing a whole room as an A2A endpoint, so an A2A client could work in an Atrium room the way an MCP client does — is a real interop bet and a large one. Not now, but it is the reason to get the small version's shape right.
 
 ### 12.9 Long-lived workers in the runner `[SHIPPED]`
 
