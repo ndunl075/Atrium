@@ -27,7 +27,7 @@ This document was originally written before any code existed. Sections that have
 
 ## 0. Implementation status
 
-The honest state of the project as of 2026-07-30. 29.1k lines of TypeScript (16.8k of it outside the tests), 764 tests across 30 files, zero runtime dependencies.
+The honest state of the project as of 2026-07-30. 29.2k lines of TypeScript (16.8k of it outside the tests), 767 tests across 30 files, zero runtime dependencies.
 
 ### Built and tested
 

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -50,6 +51,31 @@ async function get(handle: WatchServerHandle, path = "/"): Promise<{ status: num
 }
 
 /**
+ * `fetch` will not let a caller forge a Host header, which is exactly the
+ * header the rebinding check turns on — so the tests for it go through
+ * `node:http`, which will.
+ */
+function getWithHost(
+  handle: WatchServerHandle,
+  host: string,
+  path = "/",
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      { hostname: handle.host, port: handle.port, path, method: "GET", headers: { host } },
+      (res) => {
+        let body = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => (body += chunk));
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+/**
  * Reads an open SSE response until `until` is satisfied or a deadline passes,
  * the same "keep reading past the keep-alive comment frames" pattern the
  * existing live-stream tests already use, generalised so the new tests below
@@ -94,6 +120,43 @@ describe("serveWatch", () => {
     const handle = await start(tempRoom());
     expect(handle.host).toBe("127.0.0.1");
     expect(handle.port).toBeGreaterThan(0);
+  });
+
+  describe("the host a request claims to have reached", () => {
+    // Binding to loopback does not stop the operator's own browser being used
+    // as the way in. A site that resolves its name to 127.0.0.1 connects
+    // legitimately; the only thing that gives it away is the name it dialled.
+    it("refuses a request arriving under somebody else's host name", async () => {
+      const room = tempRoom({ name: "newsroom" });
+      createTask(room, room.join({ name: "scout", role: "worker" }).member.id, {
+        title: "Draft the opening",
+      });
+      const handle = await start(room);
+
+      const { status, body } = await getWithHost(handle, "attacker.example.com");
+
+      expect(status).toBe(403);
+      expect(body).not.toContain("Draft the opening");
+      expect(body).not.toContain("newsroom");
+    });
+
+    it("refuses it on the event stream too, not only the pages", async () => {
+      // /events is the whole log, so a check that covered pages alone would
+      // leave the more valuable route open.
+      const handle = await start(tempRoom());
+      const { status } = await getWithHost(handle, "attacker.example.com", "/events");
+      expect(status).toBe(403);
+    });
+
+    it("allows the names a person actually reaches it by", async () => {
+      const handle = await start(tempRoom({ name: "newsroom" }));
+
+      for (const host of [`127.0.0.1:${handle.port}`, `localhost:${handle.port}`]) {
+        const { status, body } = await getWithHost(handle, host);
+        expect(status).toBe(200);
+        expect(body).toContain("newsroom");
+      }
+    });
   });
 
   it("renders the room's real content, not a placeholder", async () => {

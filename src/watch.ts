@@ -20,13 +20,16 @@
  * decisions separate. Starting the watch UI is its own opt-in.
  *
  * What that buys is the freedom to have no token at all, which is what makes
- * this usable from a browser. The protections instead are: it binds to
- * 127.0.0.1 unless a human deliberately says otherwise, and it is structurally
+ * this usable from a browser. The protections instead are three. It binds to
+ * 127.0.0.1 unless a human deliberately says otherwise. It is structurally
  * read-only — every method other than GET is refused before any routing
- * happens, and no handler below calls anything that appends to the log. That
- * is a weaker boundary than the MCP endpoint's and it is stated plainly rather
- * than dressed up: anything running on the machine can read the room through
- * this port while it is open.
+ * happens, and no handler below calls anything that appends to the log. And it
+ * refuses any request whose Host header is not a name that reaches this
+ * machine, which is what keeps a page the operator happens to be visiting from
+ * reading the room through their own browser; see `allowedHostnames`. That is
+ * still a weaker boundary than the MCP endpoint's and it is stated plainly
+ * rather than dressed up: anything running on the machine can read the room
+ * through this port while it is open.
  *
  * The page is self-contained. All CSS and JS are inline and nothing is fetched
  * from the internet, so it still works offline. That is partly principle —
@@ -2034,10 +2037,11 @@ export function serveWatch(
   const host = options.host ?? "127.0.0.1";
   const pollMs = options.pollMs ?? DEFAULT_POLL_MS;
   const streams = new Set<ServerResponse>();
+  const allowed = allowedHostnames(host);
 
   const server = createServer((req, res) => {
     try {
-      route(room, pollMs, streams, req, res);
+      route(room, pollMs, streams, allowed, req, res);
     } catch (err) {
       if (res.headersSent) {
         res.destroy();
@@ -2085,13 +2089,66 @@ export function serveWatch(
   });
 }
 
+/**
+ * The names a browser is allowed to have dialled to arrive here.
+ *
+ * Binding to 127.0.0.1 stops anything off the machine from connecting, but it
+ * does not stop a *page* the operator is already visiting from connecting on
+ * their behalf. A site that points its own domain at 127.0.0.1 — DNS
+ * rebinding — becomes same-origin with this server the moment the name
+ * resolves, so the browser will fetch the room and hand the briefs, drafts and
+ * rejection reasons back to that site. The bind address cannot see any of
+ * that, because by then the connection really is local. The Host header can,
+ * because the browser reports the name it asked for rather than the address it
+ * reached.
+ *
+ * A custom `--host` is an operator saying they meant to expose this, so it
+ * joins the list rather than being second-guessed.
+ */
+function allowedHostnames(host: string): Set<string> {
+  return new Set([host.toLowerCase(), "localhost", "127.0.0.1", "::1"]);
+}
+
+function hostAllowed(header: string | undefined, allowed: Set<string>): boolean {
+  // A request with no Host at all is refused rather than waved through: every
+  // browser sends one, so its absence says the caller is not what this serves.
+  if (header === undefined) return false;
+  let hostname: string;
+  try {
+    hostname = new URL(`http://${header}`).hostname;
+  } catch {
+    return false;
+  }
+  // URL keeps IPv6 literals bracketed; the list above stores them bare.
+  const bare =
+    hostname.startsWith("[") && hostname.endsWith("]")
+      ? hostname.slice(1, -1)
+      : hostname;
+  return allowed.has(bare.toLowerCase());
+}
+
 function route(
   room: Room,
   pollMs: number,
   streams: Set<ServerResponse>,
+  allowed: Set<string>,
   req: IncomingMessage,
   res: ServerResponse,
 ): void {
+  // Checked before anything else, for the same reason the method is: a route
+  // added later must not be able to forget it.
+  if (!hostAllowed(req.headers.host, allowed)) {
+    sendHtml(
+      res,
+      403,
+      page(
+        "atrium watch",
+        `<div class="note">This room is served to this machine only. The request arrived under a host name this server does not answer to, which is what a browser sends when some other site is asking on your behalf. Open the address <code>atrium watch</code> printed instead.</div>`,
+      ),
+    );
+    return;
+  }
+
   // Read-only, enforced here rather than per-route so that adding a route
   // later cannot accidentally open a writable one.
   if (req.method !== "GET" && req.method !== "HEAD") {
