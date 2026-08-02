@@ -259,7 +259,22 @@ export function startPollingWorkers(
   return { started, done };
 }
 
-/** Environment contract shared by every worker adapter. */
+/**
+ * Environment contract shared by every worker adapter.
+ *
+ * These are passed to the child as environment, never spliced into the command
+ * string, and that distinction is load-bearing. `ATRIUM_TASK_TITLE` and
+ * `ATRIUM_TASK_DESCRIPTION` are whatever the member who created the task typed,
+ * which in a running room is usually another agent — so they are untrusted
+ * input that happens to arrive by a trusted route. Handed over as environment
+ * they stay inert: the child gets the bytes and a shell never sees them.
+ *
+ * A job file that interpolates one into its own `command` gives that up, and
+ * gives it up completely on Windows, where `cmd.exe` expands `%VAR%` before it
+ * parses the line — an `&` in a task title then starts a second command. The
+ * README says the same thing next to the list of variables, because that is
+ * where somebody writing a job file is looking.
+ */
 export function workerEnvironment(
   assignment: RunnerAssignment,
   roomDir: string,
