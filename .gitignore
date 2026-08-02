@@ -22,3 +22,5 @@ demo-room/
 
 # The room "npm run demo" builds. Recreated on every run with --fresh.
 demo-newsroom/
+.vercel
+.env*
