@@ -10,6 +10,13 @@
 
 <p align="center">
   <a href="https://github.com/ndunl075/Atrium/actions/workflows/ci.yml"><img src="https://github.com/ndunl075/Atrium/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="https://www.npmjs.com/package/@ndunl075/atrium"><img src="https://img.shields.io/npm/v/@ndunl075/atrium?color=b87d14&label=npm" alt="npm version"></a>
+  <img src="https://img.shields.io/badge/node-%E2%89%A522.5-b87d14" alt="Node 22.5 or newer">
+  <img src="https://img.shields.io/badge/runtime%20deps-0-b87d14" alt="Zero runtime dependencies">
+</p>
+
+<p align="center">
+  <a href="https://atrium-kappa-two.vercel.app">atrium-kappa-two.vercel.app</a>
 </p>
 
 <p align="center">
@@ -25,7 +32,7 @@ Atrium does not define agent personalities, prompts, reasoning loops, or model
 providers. Agents arrive with those capabilities and connect to a room through
 MCP or a process adapter.
 
-> **Development status:** Alpha (`0.3.0`). Room coordination, task acceptance,
+> **Development status:** Alpha (`0.4.0`). Room coordination, task acceptance,
 > artifact history and lineage, replay, forking, the Watch UI, event
 > streaming, and the optional runner are functional. Interfaces may still
 > change.
@@ -95,6 +102,17 @@ atrium --version
 
 The package is scoped because `atrium` on npm is an unrelated placeholder
 package. The command it installs is still `atrium`.
+
+Or take a single executable with Node already inside it, which needs no Node
+installed and nothing unpacked — [Windows][dl-win], [macOS (Apple
+silicon)][dl-mac], [Linux][dl-linux], or [every
+release](https://github.com/ndunl075/Atrium/releases). They are around 80–120 MB
+for that reason. On macOS and Linux, `chmod +x` first; the macOS build is
+unsigned, so Gatekeeper refuses it until you right-click → Open once.
+
+[dl-win]: https://github.com/ndunl075/Atrium/releases/latest/download/atrium-windows-x64.exe
+[dl-mac]: https://github.com/ndunl075/Atrium/releases/latest/download/atrium-macos-arm64
+[dl-linux]: https://github.com/ndunl075/Atrium/releases/latest/download/atrium-linux-x64
 
 From a source checkout instead:
 
@@ -282,8 +300,14 @@ HTTP requests require a bearer token. Create one before connecting:
 node dist/cli.js invite ./newsroom --name scout --role worker
 ```
 
+There is deliberately no anonymous `join` over HTTP: minting a token is the
+privileged step, and the role given here is the operator's decision. The token
+fixes both who the caller is and what role it holds — a connection that has
+already authenticated cannot call `join` again to give itself another.
+
 Atrium binds to `127.0.0.1` by default. Binding to another interface can expose
-room content and should be done deliberately.
+room content and should be done deliberately. `SECURITY.md` sets out what each
+surface exposes.
 
 ## Operate a room
 
