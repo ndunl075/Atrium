@@ -39,7 +39,7 @@ import {
 } from "./board.js";
 import { describeHistory, getContext, listPinned, pinArtifact, unpinArtifact } from "./context.js";
 import { costSummary, reportCost } from "./cost.js";
-import { InvalidError, isAtriumError } from "./errors.js";
+import { InvalidError, PermissionError, isAtriumError } from "./errors.js";
 import { listArtifacts, listDeletedArtifacts, readArtifact, writeArtifact } from "./artifacts.js";
 import { resolveArtifact, toArtifactPath } from "./paths.js";
 import { reviewTask, submitTask } from "./acceptance.js";
@@ -111,9 +111,17 @@ export interface RoomServerOptions {
 export class RoomServer {
   private readonly room: Room;
   private member?: Member;
+  /**
+   * Whether this connection's identity came from a session token rather than
+   * from a `join` made on the connection itself. Only changes what the refusal
+   * in `join` says, but the two cases are worth telling apart: one is an agent
+   * that needs a second invite, the other is an agent that has muddled itself.
+   */
+  private readonly tokenBound: boolean;
 
   constructor(room: Room, options: RoomServerOptions = {}) {
     this.room = room;
+    this.tokenBound = Boolean(options.token);
     if (options.token) this.member = room.authenticate(options.token);
   }
 
@@ -162,6 +170,35 @@ export class RoomServer {
   ): Promise<unknown> {
     switch (name) {
       case "join": {
+        // `join` mints a member holding whatever role the caller asked for, so
+        // a connection that already has an identity must not reach it.
+        //
+        // Over stdio this is only tidiness: the trust boundary is the process,
+        // and whoever spawned it could have joined as any role on the first
+        // call anyway. Over HTTP it is the difference between a role and a
+        // suggestion. Authenticating there costs a session token, and minting
+        // one with `atrium invite --role worker` is the operator saying what
+        // this agent may do; if that token can turn round and join as `human`,
+        // the role on the invite was never a constraint.
+        //
+        // It also protects the one rule the review model rests on. Nobody
+        // accepts their own work — but `reviewTask` enforces that by comparing
+        // member ids, and a second identity is a second id. A worker that can
+        // join again as a reviewer can sign off the work it just submitted.
+        if (this.member) {
+          throw new PermissionError(
+            this.tokenBound
+              ? `This connection is already authenticated as ${this.member.name}, a ` +
+                `${this.member.role}. A session token fixes both who you are and what ` +
+                "role you hold. If this room needs another member, ask whoever runs it " +
+                'to mint one with "atrium invite".'
+              : `This connection already joined as ${this.member.name}, a ` +
+                `${this.member.role}. One connection is one member; open another ` +
+                "connection if you need to act as somebody else.",
+            { memberId: this.member.id, role: this.member.role },
+          );
+        }
+
         const result = this.room.join({
           name: str(args, "name"),
           role: (str(args, "role", "worker") as MemberRole),

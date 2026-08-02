@@ -462,6 +462,15 @@ Each process receives:
 - `ATRIUM_TASK_DESCRIPTION`
 - `ATRIUM_WORKER_NAME`
 
+Read those from the environment inside the worker. Do not interpolate them into
+the `command` string in the job file — `command` runs through a shell, and a
+task's title and description are written by whoever created the task, which in a
+running room is usually another agent. A template like `node worker.mjs
+%ATRIUM_TASK_TITLE%` is expanded by `cmd.exe` *before* the line is parsed, so a
+task title is enough to run a second command. `node worker.mjs` on its own, with
+the worker reading `process.env.ATRIUM_TASK_TITLE`, has no such problem: the
+values are passed to the child directly and never go near a shell.
+
 The runner starts workers but does not maintain a separate task board. A worker
 must still join the room and claim its assigned task through Atrium.
 
@@ -532,6 +541,18 @@ are not currently implemented.
 See [ARCHITECTURE.md](https://github.com/ndunl075/Atrium/blob/main/ARCHITECTURE.md)
 for design details and open decisions — section 0 lists what is built versus
 planned, and section 12 covers what is being built next.
+
+## Security
+
+To report a vulnerability, use [GitHub's private vulnerability
+reporting](https://github.com/ndunl075/Atrium/security/advisories/new) rather
+than a public issue.
+
+[SECURITY.md](https://github.com/ndunl075/Atrium/blob/main/SECURITY.md) also
+writes down the trust model these servers are built against — what a room member
+is assumed to be capable of, what a session token is worth, and which of the two
+network surfaces is unauthenticated on purpose. Worth reading before exposing
+either of them beyond loopback.
 
 ## License
 

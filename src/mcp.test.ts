@@ -183,6 +183,40 @@ describe("joining", () => {
 
     expect(new RoomServer(room, { token }).currentMember?.id).toBe(member.id);
   });
+
+  // `join` takes the role from its arguments, so anything that can call it can
+  // pick its own role. That is fine on a connection that has no identity yet —
+  // over stdio the process boundary is the trust boundary — but a connection
+  // holding a session token has already been told what it is by whoever ran
+  // `atrium invite`, and must not be able to talk itself into something else.
+  it("refuses a second join from a connection authenticated by token", async () => {
+    const room = tempRoom();
+    const { token } = room.join({ name: "scout", role: "worker" });
+    const server = new RoomServer(room, { token });
+
+    const { data, isError } = await call(server, "join", {
+      name: "scout-but-human",
+      role: "human",
+    });
+
+    expect(isError).toBe(true);
+    expect(data.error).toBe("permission");
+    expect(data.message).toMatch(/already authenticated/);
+    expect(server.currentMember?.role).toBe("worker");
+    expect(room.roster()).toHaveLength(1);
+  });
+
+  it("refuses a second join on a connection that already joined", async () => {
+    const server = new RoomServer(tempRoom());
+    await call(server, "join", { name: "scout", role: "worker" });
+
+    const { data, isError } = await call(server, "join", { name: "scout", role: "human" });
+
+    expect(isError).toBe(true);
+    expect(data.error).toBe("permission");
+    expect(data.message).toMatch(/already joined/);
+    expect(server.currentMember?.role).toBe("worker");
+  });
 });
 
 describe("task output contracts", () => {
@@ -264,6 +298,33 @@ describe("the rule that nobody signs off their own work, through the tools", () 
 
     expect(isError).toBe(false);
     expect(data.state).toBe("accepted");
+  });
+
+  // The rule above is enforced by comparing member ids, which holds only for
+  // as long as one agent cannot get itself a second id. It could: `join` mints
+  // a member at whatever role is asked for, and nothing stopped an
+  // already-authenticated connection from calling it. A worker invited over
+  // HTTP could join again as a reviewer and sign off the work it had just
+  // submitted — through the front door, with one operator-issued token.
+  it("refuses a worker token minting a reviewer to accept its own work", async () => {
+    const room = tempRoom();
+    const { token } = room.join({ name: "scout", role: "worker" });
+    const worker = new RoomServer(room, { token });
+
+    const { data: task } = await call(worker, "create_task", { title: "draft" });
+    await call(worker, "claim_task", { task_id: task.id });
+    await call(worker, "submit_task", { task_id: task.id, summary: "done" });
+
+    const second = await call(worker, "join", { name: "scout-reviewer", role: "reviewer" });
+
+    expect(second.isError).toBe(true);
+    expect(second.data.error).toBe("permission");
+    expect(second.data.token).toBeUndefined();
+
+    // The work is still sitting there waiting for somebody who is not its author.
+    const { data: after } = await call(worker, "get_task", { task_id: task.id });
+    expect(after.state).toBe("submitted");
+    expect(room.roster()).toHaveLength(1);
   });
 });
 
