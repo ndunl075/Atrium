@@ -33,6 +33,21 @@ describe("parseYaml", () => {
       expect(() => parseYaml(["a: 1", "a: 2"].join("\n"))).toThrow(/line 2: duplicate key "a"/);
     });
 
+    // Assigning this key sets the object's prototype instead of adding an
+    // entry, so accepting it would mean parsing a document and handing back
+    // one that is missing a key it plainly contains.
+    it("refuses __proto__ as a key rather than silently dropping it", () => {
+      expect(() => parseYaml(["__proto__:", "  polluted: yes", "name: ok"].join("\n"))).toThrow(
+        /line 1: __proto__ cannot be used as a key/,
+      );
+    });
+
+    it("refuses __proto__ nested anywhere, not just at the top", () => {
+      expect(() =>
+        parseYaml(["tasks:", "  draft:", "    __proto__: x"].join("\n")),
+      ).toThrow(/line 3: __proto__ cannot be used as a key/);
+    });
+
     it("does not split a value containing a colon without a following space", () => {
       expect(parseYaml("url: https://example.com/x")).toEqual({
         url: "https://example.com/x",
@@ -110,6 +125,13 @@ describe("parseYaml", () => {
 
     it("refuses a duplicate key inside a flow mapping", () => {
       expect(() => parseYaml("a: { b: 1, b: 2 }")).toThrow(/duplicate key "b"/);
+    });
+
+    it("refuses __proto__ inside a flow mapping, quoted or bare", () => {
+      expect(() => parseYaml("a: { __proto__: 1 }")).toThrow(/__proto__ cannot be used as a key/);
+      expect(() => parseYaml('a: { "__proto__": 1 }')).toThrow(
+        /__proto__ cannot be used as a key/,
+      );
     });
   });
 

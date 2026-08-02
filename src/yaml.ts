@@ -175,6 +175,23 @@ function parseBlock(cursor: Cursor, indent: number): YamlValue {
     : parseMapping(cursor, indent);
 }
 
+/**
+ * `__proto__` is refused as a mapping key, in both block and flow form.
+ *
+ * Assigning it does not create a key. `out["__proto__"] = value` runs the
+ * setter every plain object inherits and swaps the object's prototype instead,
+ * so the parsed document silently loses the entry and silently gains whatever
+ * that value was carrying, reachable from every property lookup that misses.
+ *
+ * This is not the global `Object.prototype` pollution the name usually implies
+ * — the damage stops at the object being built — but a job file whose keys do
+ * not survive parsing is worth an error rather than a shrug, and a validator
+ * that checks `Object.keys` would not see what it had been handed. There is no
+ * legitimate use for the key in a job file, so it is refused rather than
+ * quietly rewritten into an own property.
+ */
+const UNSAFE_KEY = "__proto__";
+
 function parseMapping(cursor: Cursor, indent: number): Record<string, YamlValue> {
   const result: Record<string, YamlValue> = {};
 
@@ -201,6 +218,10 @@ function parseMapping(cursor: Cursor, indent: number): Record<string, YamlValue>
         index + 1,
         `expected "key: value" here, got ${JSON.stringify(line.trim())}`,
       );
+    }
+
+    if (split.key === UNSAFE_KEY) {
+      throw fail(cursor, index + 1, `${UNSAFE_KEY} cannot be used as a key`);
     }
 
     if (Object.hasOwn(result, split.key)) {
@@ -651,6 +672,9 @@ function parseFlow(cursor: Cursor, lineIndex: number, text: string): YamlValue {
         return stop(`expected ":" after the key ${JSON.stringify(key)} in a flow mapping`);
       }
       i++;
+      if (key === UNSAFE_KEY) {
+        return stop(`${UNSAFE_KEY} cannot be used as a key in a flow mapping`);
+      }
       if (Object.hasOwn(out, key)) {
         return stop(`duplicate key ${JSON.stringify(key)} in a flow mapping`);
       }
