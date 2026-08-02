@@ -2,12 +2,81 @@
 
 Notable changes to Atrium. Dates are the day the change landed on `main`.
 
-This project is pre-1.0 and has never been published to a registry, so the
-version number tracks the shape of the API rather than promising anything to
-an installed base. Breaking changes are listed first in each release and are
-called breaking even when nothing could have been broken yet — the point of
+This project is pre-1.0. The version number tracks the shape of the API rather
+than promising much to an installed base, but as of 0.3.0 there is one — the
+package is on npm — so breaking changes are listed first in each release and
+are called breaking even when little could have been broken yet. The point of
 writing them down is that the next person reading this cannot tell, from the
 code alone, which changes were deliberate.
+
+## 0.4.0 — 2026-08-02
+
+A security release. **0.3.0 is on npm and should be replaced**: it contains the
+privilege escalation described below, and every other change here came out of
+the same audit.
+
+### Security
+
+- **A session token could mint a second identity holding any role.** `join`
+  takes its role from its own arguments and never checked whether the
+  connection had already authenticated, so a token issued by `atrium invite
+  --role worker` could call `join` again asking for `human` and receive a new
+  member and a new token holding it. Over stdio this changed nothing — the
+  trust boundary there is the process, and the first `join` could already ask
+  for any role — but over HTTP it meant the role on an invite was never a
+  constraint.
+
+  It also defeated the rule the review model rests on. Nobody accepts their own
+  work, but that is enforced by comparing member ids, and a second identity is
+  a second id: a worker could submit a task, join again as a reviewer, and sign
+  off its own submission with one operator-issued token. `join` now refuses any
+  connection that already has an identity.
+
+### Breaking
+
+- **`/health` no longer reports `head`.** The route takes no token, and the log
+  head is a running count of everything the room has ever done — pollable, by
+  anything that can reach the port, to learn when a room is busy. `status` still
+  distinguishes `ok` from `halted`. Anything that wants the head can
+  authenticate and read `/events`.
+- **`searchArtifacts` and `indexRoom` stop at a ceiling.** One call previously
+  cost work proportional to the whole room — about 0.4ms per file, so a
+  ten-thousand-file room was over four seconds of CPU per call, and any member
+  can call `search_artifacts` in a loop. The walk now stops at 2000 files or
+  16MB, whichever comes first. Rooms of the few hundred files this is designed
+  for are unaffected; a larger room now gets a partial answer where it
+  previously got a slow complete one. Both ceilings are raisable per call, and
+  `pathPrefix` narrows the walk.
+- **`parseYaml` refuses `__proto__` as a mapping key.** Assigning it never
+  created a key — it replaced the parsed object's prototype — so a job file
+  using it silently lost the entry. Now a parse error naming the line.
+
+### Added
+
+- **`IndexStats.truncated`** says whether a ceiling stopped the walk, so "no
+  results" can still be told apart from "did not look that far".
+- **`maxFiles` and `maxTotalBytes`** on search and index options, for a room
+  that genuinely is larger than the defaults.
+- **`SECURITY.md`**, with a private disclosure path and the trust model this
+  codebase is built against: what a room member is assumed to be capable of,
+  what a session token is worth, and which of the two network surfaces is
+  unauthenticated on purpose.
+
+### Fixed
+
+- The search walk is now sorted, so a truncated index is the same subset twice
+  rather than whatever order the filesystem returned.
+
+### Documentation
+
+- The runner's environment contract now says that task titles and descriptions
+  are agent-written and must not be interpolated into a job file's `command`:
+  `cmd.exe` expands `%VAR%` before parsing, so a title containing `&` would run
+  a second command. Read them from the environment inside the worker instead.
+- `.atrium/tokens.json` is written `0o600`, which is real on Linux and macOS
+  and very nearly a no-op on Windows, where access is decided by an ACL Node
+  cannot set. Said plainly in both the code and SECURITY.md: on Windows the
+  room directory is the access control.
 
 ## 0.3.0 — 2026-07-30
 
