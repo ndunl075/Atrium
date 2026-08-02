@@ -542,6 +542,18 @@ See [ARCHITECTURE.md](https://github.com/ndunl075/Atrium/blob/main/ARCHITECTURE.
 for design details and open decisions — section 0 lists what is built versus
 planned, and section 12 covers what is being built next.
 
+## Security
+
+To report a vulnerability, use [GitHub's private vulnerability
+reporting](https://github.com/ndunl075/Atrium/security/advisories/new) rather
+than a public issue.
+
+[SECURITY.md](https://github.com/ndunl075/Atrium/blob/main/SECURITY.md) also
+writes down the trust model these servers are built against — what a room member
+is assumed to be capable of, what a session token is worth, and which of the two
+network surfaces is unauthenticated on purpose. Worth reading before exposing
+either of them beyond loopback.
+
 ## License
 
 Apache License 2.0.
