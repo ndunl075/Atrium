@@ -50,6 +50,21 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
 
+      # Before the tests, for the same reason ci.yml builds before testing:
+      # src/demo.test.ts runs the shipped demo against dist/cli.js and
+      # src/concurrency.test.ts spawns processes that import dist/index.js, so
+      # both fail with "cannot find module" against a checkout that has never
+      # been built. `build:binary` below does not cover it — that bundles from
+      # source with esbuild and never produces dist/ — which is why this needs
+      # its own step rather than being implied by the one after it.
+      #
+      # This is why the repository had no releases. Every tag run failed here,
+      # and a manual run does not publish (see the `if` on the publish job), so
+      # the workflow looked like it worked when it had never once produced a
+      # release.
+      - name: Build
+        run: npm run build
+
       - name: Test
         run: npm test
 
