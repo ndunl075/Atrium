@@ -211,8 +211,16 @@ describe("research, draft, review", () => {
 
     const task = createTask(room, editor.id, {
       title: "Write the totals file",
-      // Passes only once the file says what it should.
-      acceptance: { kind: "command", command: "grep -q 4.2m summary.md" },
+      // Passes only once the file says what it should. A node one-liner rather
+      // than `grep -q`, because the command runs through cmd.exe on Windows,
+      // where there is no grep. Worth noting what that cost: a missing grep
+      // also exits non-zero, so the rejection below went on passing for the
+      // wrong reason while only the acceptance failed.
+      acceptance: {
+        kind: "command",
+        command:
+          "node -e \"process.exit(require('fs').readFileSync('summary.md','utf8').includes('4.2m')?0:1)\"",
+      },
     });
 
     claimTask(room, writer.id, task.id);

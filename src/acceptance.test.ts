@@ -19,6 +19,20 @@ import { addSeconds, newId, now } from "./util.js";
 // board here by appending the same events a board module would append, and
 // read back with foldTasks — the same fold acceptance.ts itself uses.
 
+/**
+ * A command that never exits, for the tests that need one killed at a timeout.
+ *
+ * It idles through node rather than `sleep`, which is what this used to be. An
+ * acceptance command runs through a shell, and on Windows that shell is
+ * cmd.exe, which has no `sleep` — so the old version passed or failed
+ * depending on which terminal ran the suite, because Git Bash puts a sleep.exe
+ * on PATH and PowerShell does not. That is worse than a test that simply
+ * fails: it was green on the same machine that it was red on.
+ *
+ * node is the one interpreter certainly installed, since it is running this.
+ */
+const HANGS = 'node -e "setInterval(function(){},1000)"';
+
 const created: Array<{ room: Room; dir: string }> = [];
 
 function tempRoom(config?: Parameters<typeof Room.create>[1]): Room {
@@ -195,10 +209,9 @@ describe("submitTask", () => {
     it("kills the command at the room's commandTimeoutSeconds when the task sets none, and reports a rejection naming the room setting", async () => {
       const room = tempRoom({ config: { commandTimeoutSeconds: 1 } });
       const worker = room.join({ name: "w1", role: "worker" }).member;
-      // See the comment on the "sleep 5" test in the runAcceptanceCommand
-      // block below for why "sleep" rather than a platform-specific idle
-      // command.
-      const taskId = createTask(room, { kind: "command", command: "sleep 5" });
+      // See HANGS at the top of this file for why the idle command runs
+      // through node rather than being `sleep 5`.
+      const taskId = createTask(room, { kind: "command", command: HANGS });
       claim(room, taskId, worker.id);
 
       const task = await submitTask(room, worker.id, taskId, { summary: "done" });
@@ -215,7 +228,7 @@ describe("submitTask", () => {
       const worker = room.join({ name: "w1", role: "worker" }).member;
       const taskId = createTask(room, {
         kind: "command",
-        command: "sleep 5",
+        command: HANGS,
         timeoutSeconds: 1,
       });
       claim(room, taskId, worker.id);
@@ -416,7 +429,7 @@ describe("runAcceptanceCommand", () => {
     const room = tempRoom();
     const task = {
       ...readTaskShapeStub(),
-      acceptance: { kind: "command", command: "sleep 5" } as const,
+      acceptance: { kind: "command", command: HANGS } as const,
     };
 
     const result = await runAcceptanceCommand(room, task, 200);
