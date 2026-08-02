@@ -36,7 +36,7 @@
     }
   },
   "bin": {
-    "atrium": "./dist/cli.js"
+    "atrium": "dist/cli.js"
   },
   "files": [
     "dist/**/*.js",
