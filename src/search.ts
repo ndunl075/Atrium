@@ -12,6 +12,22 @@
  * and a stale index quietly giving a wrong answer is a worse failure than
  * spending a few milliseconds rebuilding one. This also means there is no
  * on-disk index to keep in sync with writes, leases, or deletes.
+ *
+ * Rebuilding per call does mean one query costs work proportional to the room,
+ * and `search_artifacts` is a tool any member can call in a loop. Measured on
+ * the development machine it runs about 0.4ms per file: a few hundred files —
+ * the size this is designed for — is tens of milliseconds, but ten thousand is
+ * over four seconds of CPU and tens of megabytes of churn, per call, from one
+ * small request. So the walk stops at a ceiling.
+ *
+ * The ceiling is not a cache, deliberately. Caching would need an invalidation
+ * signal, and the only cheap one available is the log — which does not see a
+ * file edited on disk by hand, something this search reads and the log never
+ * records. That is precisely the stale wrong answer the paragraph above
+ * refuses. Bounding the work keeps every answer current and makes the cost of
+ * one call predictable; what it gives up is completeness in a room larger than
+ * the ceiling, which is reported rather than hidden (`IndexStats.truncated`)
+ * and can be raised or narrowed with `pathPrefix`.
  */
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -31,24 +47,46 @@ export interface SearchHit {
   bytes: number;
 }
 
-export interface SearchOptions {
-  limit?: number;
+/** Bounds on how much of a room one call will read. See the module header. */
+export interface IndexLimits {
+  /** Largest single file to index, in bytes. Bigger ones are skipped. */
   maxBytes?: number;
+  /** Most files to index in one call. */
+  maxFiles?: number;
+  /** Most bytes to index in one call, summed across files. */
+  maxTotalBytes?: number;
+}
+
+export interface SearchOptions extends IndexLimits {
+  limit?: number;
   /** Limit matches to this artifact path, or to files beneath it. */
   pathPrefix?: string;
 }
 
-export interface IndexOptions {
-  maxBytes?: number;
-}
+export type IndexOptions = IndexLimits;
 
 export interface IndexStats {
   files: number;
   skipped: number;
+  /**
+   * Whether a ceiling stopped the walk before the room ran out. When true,
+   * `files` counts what was indexed, not what is there, and a search can only
+   * have looked at that much — so "no results" does not mean "not present".
+   */
+  truncated: boolean;
 }
 
 const DEFAULT_LIMIT = 20;
 const DEFAULT_MAX_BYTES = 1024 * 1024;
+
+/**
+ * Ceilings for one call. Set well above the few hundred files this is designed
+ * for, so an ordinary room never meets them, and low enough that the worst case
+ * stays under about a second rather than growing with whatever a member decided
+ * to write. Both are raisable per call for a room that genuinely is larger.
+ */
+const DEFAULT_MAX_FILES = 2000;
+const DEFAULT_MAX_TOTAL_BYTES = 16 * 1024 * 1024;
 
 /** Directory names never walked into, wherever they appear in the tree. */
 const SKIPPED_DIRS = new Set([".atrium", "node_modules", ".git", "dist"]);
@@ -65,8 +103,7 @@ export function searchArtifacts(
   if (!Number.isInteger(limit) || limit < 0) {
     throw new InvalidError("limit must be a whole number, zero or more.");
   }
-  const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
-  validateMaxBytes(maxBytes);
+  const limits = resolveLimits(options);
   const pathPrefix =
     options.pathPrefix === undefined
       ? undefined
@@ -86,7 +123,7 @@ export function searchArtifacts(
   const matchQuery = buildMatchQuery(query);
   if (!matchQuery || limit === 0) return [];
 
-  const { db, files } = buildIndex(room, maxBytes);
+  const { db, files } = buildIndex(room, limits);
   try {
     if (files === 0) return [];
 
@@ -126,20 +163,20 @@ export function searchArtifacts(
 /**
  * Walks the room and reports how much of it is searchable, without running a
  * query. Exposed mainly so a caller can tell "no results" apart from "nothing
- * was indexed" (e.g. an empty room, or everything over maxBytes).
+ * was indexed" (e.g. an empty room, everything over maxBytes, or a room big
+ * enough that a ceiling stopped the walk — `truncated`).
  */
 export function indexRoom(room: Room, options: IndexOptions = {}): IndexStats {
-  const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
-  validateMaxBytes(maxBytes);
-  const { db, files, skipped } = buildIndex(room, maxBytes);
+  const { db, files, skipped, truncated } = buildIndex(room, resolveLimits(options));
   db.close();
-  return { files, skipped };
+  return { files, skipped, truncated };
 }
 
 function buildIndex(
   room: Room,
-  maxBytes: number,
-): { db: Db; files: number; skipped: number } {
+  limits: Required<IndexLimits>,
+): { db: Db; files: number; skipped: number; truncated: boolean } {
+  const { maxBytes, maxFiles, maxTotalBytes } = limits;
   const db = openDb(":memory:");
   // `bytes` is UNINDEXED: it rides along for the SearchHit shape but has no
   // business being tokenized and searched.
@@ -150,9 +187,20 @@ function buildIndex(
 
   let files = 0;
   let skipped = 0;
+  let totalBytes = 0;
+  let truncated = false;
 
+  // Entries are walked in a stable order so that a truncated index is at least
+  // the same truncated index next time, rather than a different arbitrary
+  // subset per call.
   const walk = (dir: string): void => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (truncated) return;
+    const entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
+      a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+    );
+
+    for (const entry of entries) {
+      if (truncated) return;
       const abs = join(dir, entry.name);
 
       if (entry.isDirectory()) {
@@ -168,6 +216,13 @@ function buildIndex(
         continue;
       }
 
+      // Checked before reading, not after: the point is to stop doing work,
+      // and by the time a file is in memory the work is already done.
+      if (files >= maxFiles || totalBytes + bytes > maxTotalBytes) {
+        truncated = true;
+        return;
+      }
+
       const buf = readFileSync(abs);
       if (looksBinary(buf)) {
         skipped++;
@@ -176,11 +231,29 @@ function buildIndex(
 
       insert.run(toArtifactPath(room.dir, abs), buf.toString("utf8"), bytes);
       files++;
+      totalBytes += bytes;
     }
   };
 
   walk(room.dir);
-  return { db, files, skipped };
+  return { db, files, skipped, truncated };
+}
+
+/** Fills in the ceilings, validating anything the caller set. */
+function resolveLimits(options: IndexLimits): Required<IndexLimits> {
+  const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
+  const maxFiles = options.maxFiles ?? DEFAULT_MAX_FILES;
+  const maxTotalBytes = options.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES;
+  validateMaxBytes(maxBytes);
+  for (const [name, value] of [
+    ["maxFiles", maxFiles],
+    ["maxTotalBytes", maxTotalBytes],
+  ] as const) {
+    if (!Number.isInteger(value) || value < 0) {
+      throw new InvalidError(`${name} must be a whole number, zero or more.`);
+    }
+  }
+  return { maxBytes, maxFiles, maxTotalBytes };
 }
 
 function looksBinary(buf: Buffer): boolean {

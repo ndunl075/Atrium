@@ -144,6 +144,71 @@ describe("searchArtifacts", () => {
     const stats = indexRoom(room);
     expect(stats.files).toBe(3);
     expect(stats.skipped).toBe(1);
+    expect(stats.truncated).toBe(false);
+  });
+
+  // One search costs work proportional to the room, and any member can call it
+  // in a loop, so the walk stops rather than growing with whatever somebody
+  // decided to write. An ordinary room never reaches these.
+  describe("ceilings on how much one call reads", () => {
+    it("stops at maxFiles and says the answer is partial", () => {
+      const room = tempRoom();
+      for (let i = 0; i < 12; i++) write(room, `f${i}.md`, "findme");
+
+      const stats = indexRoom(room, { maxFiles: 5 });
+
+      expect(stats.files).toBe(5);
+      expect(stats.truncated).toBe(true);
+    });
+
+    it("stops at maxTotalBytes across files, not just per file", () => {
+      const room = tempRoom();
+      for (let i = 0; i < 10; i++) write(room, `f${i}.md`, "x".repeat(100));
+
+      const stats = indexRoom(room, { maxTotalBytes: 250 });
+
+      expect(stats.truncated).toBe(true);
+      expect(stats.files).toBeLessThanOrEqual(2);
+    });
+
+    it("leaves an ordinary room untruncated and complete", () => {
+      const room = tempRoom();
+      for (let i = 0; i < 40; i++) write(room, `f${i}.md`, "findme");
+
+      const stats = indexRoom(room);
+
+      expect(stats.truncated).toBe(false);
+      expect(stats.files).toBe(41); // the 40 written, plus CONTEXT.md
+      // 40, not 41: CONTEXT.md is indexed but does not contain the word.
+      expect(searchArtifacts(room, "findme", { limit: 100 })).toHaveLength(40);
+    });
+
+    it("bounds a search the same way, rather than only indexRoom", () => {
+      const room = tempRoom();
+      for (let i = 0; i < 30; i++) write(room, `f${i}.md`, "findme");
+
+      const hits = searchArtifacts(room, "findme", { maxFiles: 4, limit: 100 });
+
+      // Four files were read; CONTEXT.md sorts first and matches nothing, so
+      // three of them are hits. The ceiling is on work done, not on results.
+      expect(hits).toHaveLength(3);
+    });
+
+    it("walks in a stable order, so a truncated index is the same one twice", () => {
+      const room = tempRoom();
+      for (let i = 0; i < 20; i++) write(room, `f${i}.md`, "findme");
+
+      const first = searchArtifacts(room, "findme", { maxFiles: 6, limit: 100 });
+      const second = searchArtifacts(room, "findme", { maxFiles: 6, limit: 100 });
+
+      expect(first.map((h) => h.path).sort()).toEqual(second.map((h) => h.path).sort());
+    });
+
+    it("refuses a ceiling that is not a whole number", () => {
+      const room = tempRoom();
+      expect(() => indexRoom(room, { maxFiles: -1 })).toThrow(/maxFiles must be/);
+      expect(() => indexRoom(room, { maxTotalBytes: 1.5 })).toThrow(/maxTotalBytes must be/);
+    });
   });
 
   it("respects a limit of zero and small limits", () => {

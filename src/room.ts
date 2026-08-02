@@ -356,6 +356,22 @@ function basename(p: string): string {
 }
 
 /** Writes via a temporary file so an interrupted write cannot truncate. */
+/**
+ * `mode` is POSIX-only, and the one caller that passes it is the token file.
+ *
+ * On Linux and macOS `0o600` does what it looks like: the session tokens are
+ * readable by their owner and nobody else. On Windows it is very nearly a
+ * no-op — Node maps only the read-only bit onto the file, and access is decided
+ * by an ACL this has no way to set, so the file inherits whatever the room
+ * directory grants. Under a user profile that is usually the same answer by a
+ * different route. Under a directory shared with other accounts it is not.
+ *
+ * Left as-is rather than reached for with `icacls`: this runs inside the SQLite
+ * transaction that `join` holds, and a shell-out there would be slow on the
+ * common path and would fail in ways that break joining a room over something
+ * as peripheral as a file mode. The honest fix is knowing where to put a room,
+ * so SECURITY.md says so rather than this pretending the mode covered it.
+ */
 function writeJson(path: string, value: unknown, mode?: number): void {
   // The temporary name has to be unique per writer, not just per path.
   //

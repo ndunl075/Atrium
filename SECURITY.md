@@ -58,6 +58,13 @@ bits of `randomBytes`, stored only as a SHA-256 hash, and never written to the
 log. The role is fixed when the token is minted with `atrium invite` and cannot
 be changed by the holder.
 
+The hashes live in `.atrium/tokens.json`, written `0o600`. That mode is real on
+Linux and macOS and very nearly a no-op on Windows, where access is decided by
+an ACL Node cannot set and the file inherits whatever the room directory grants.
+So on Windows the room directory is the access control: put a room somewhere
+only you can read, and treat a room on a shared drive as readable by everyone
+who can reach it.
+
 **stdio trusts the process.** Over stdio the trust boundary is the pipe: whatever
 can spawn the server can `join` as any role, because nothing else shares that
 pipe. This is intended, and it is why there is no anonymous `join` over HTTP —
