@@ -60,9 +60,13 @@ describe("serveHttp", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toBe("no-store");
     const body = (await res.json()) as any;
-    expect(body).toEqual({ status: "ok", head: room.log.head() });
+    expect(body).toEqual({ status: "ok" });
     expect(JSON.stringify(body)).not.toContain("private-room-name");
     expect(JSON.stringify(body)).not.toContain("private-member-name");
+    // The log head is a running count of everything the room has done, and
+    // this route answers without a token. Polling it should not be a way to
+    // watch a room's activity from outside.
+    expect(body).not.toHaveProperty("head");
   });
 
   it("supports HEAD health checks and lets an operator disable the route", async () => {
@@ -88,7 +92,7 @@ describe("serveHttp", () => {
     const res = await fetch(handle.healthUrl!);
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ status: "halted", head: room.log.head() });
+    expect(await res.json()).toEqual({ status: "halted" });
   });
 
   it("runs a tool call end to end with a valid bearer token", async () => {

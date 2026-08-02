@@ -150,10 +150,15 @@ async function handleRequest(
       return;
     }
 
-    const health = {
-      status: room.isHalted() ? "halted" : "ok",
-      head: room.log.head(),
-    };
+    // Liveness only. This route has no token, so everything it says is said
+    // to anything that can reach the port, and it used to say the log head.
+    // That is a running count of everything the room has ever done: poll it
+    // and you learn whether the room is busy, when it started moving and when
+    // it stopped, without ever holding a credential. None of that is needed to
+    // answer "is this process up", which is the whole job here. Anything that
+    // genuinely wants the head can authenticate and read /events, where the
+    // rest of the log lives anyway.
+    const health = { status: room.isHalted() ? "halted" : "ok" };
     res.setHeader("cache-control", "no-store");
     if (req.method === "HEAD") {
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" }).end();
